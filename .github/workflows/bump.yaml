@@ -1,0 +1,44 @@
+name: bump
+
+# PRs opened with GITHUB_TOKEN don't trigger the ci workflow,
+# so the smoke test runs here before the PR is opened.
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Upstream opentelemetry-collector-releases tag (default latest)
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - id: bump
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(./scripts/bump.sh ${{ inputs.tag }})
+          echo "tag=$tag" >>"$GITHUB_OUTPUT"
+          git diff --quiet manifest.yaml && echo "changed=false" >>"$GITHUB_OUTPUT" || echo "changed=true" >>"$GITHUB_OUTPUT"
+      - if: steps.bump.outputs.changed == 'true'
+        run: make smoke
+      - if: steps.bump.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v8
+        with:
+          branch: bump/${{ steps.bump.outputs.tag }}
+          add-paths: manifest.yaml
+          title: Bump to upstream ${{ steps.bump.outputs.tag }}
+          commit-message: Bump to upstream ${{ steps.bump.outputs.tag }}
+          body: |
+            Pins all modules to [otelcol-contrib ${{ steps.bump.outputs.tag }}](https://github.com/open-telemetry/opentelemetry-collector-releases/releases/tag/${{ steps.bump.outputs.tag }}).
+            The smoke test (pod merge into Prometheus, AMP config validation) passed in the bump run.
+
+            Before merging, check the contrib changelog for `transform`, `deltatocumulative`, `interval`,
+            `prometheusremotewrite` and `sigv4auth`. Merging releases the new version.
