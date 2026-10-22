@@ -1,0 +1,66 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+project_name: hud-otelcol
+
+env:
+  - CGO_ENABLED=0
+  - IMAGE=ghcr.io/code-hud/hud-otel-collector
+
+before:
+  hooks:
+    - go install go.opentelemetry.io/collector/cmd/builder@{{ .Env.OCB_VERSION }}
+    - builder --config manifest.yaml --skip-compilation
+
+builds:
+  - id: hud-otelcol
+    dir: _build
+    binary: hud-otelcol
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags: [-s -w]
+    tags: [grpcnotrace]
+
+archives:
+  - name_template: "{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: checksums.txt
+
+release:
+  # Rebuild tags like v0.163.1-hud.1 are full releases, not prereleases.
+  prerelease: false
+
+dockers:
+  - &docker
+    goos: linux
+    goarch: amd64
+    dockerfile: Dockerfile
+    use: buildx
+    image_templates: ["{{ .Env.IMAGE }}:{{ .Version }}-amd64"]
+    build_flag_templates:
+      - --platform=linux/amd64
+      - --label=org.opencontainers.image.source={{ .GitURL }}
+      - --label=org.opencontainers.image.revision={{ .FullCommit }}
+      - --label=org.opencontainers.image.version={{ .Version }}
+  - <<: *docker
+    goarch: arm64
+    image_templates: ["{{ .Env.IMAGE }}:{{ .Version }}-arm64"]
+    build_flag_templates:
+      - --platform=linux/arm64
+      - --label=org.opencontainers.image.source={{ .GitURL }}
+      - --label=org.opencontainers.image.revision={{ .FullCommit }}
+      - --label=org.opencontainers.image.version={{ .Version }}
+
+docker_manifests:
+  - &manifest
+    name_template: "{{ .Env.IMAGE }}:{{ .Version }}"
+    image_templates:
+      - "{{ .Env.IMAGE }}:{{ .Version }}-amd64"
+      - "{{ .Env.IMAGE }}:{{ .Version }}-arm64"
+  - <<: *manifest
+    name_template: "{{ .Env.IMAGE }}:latest"
