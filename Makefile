@@ -6,7 +6,7 @@ ARCH ?= $(shell docker version --format '{{.Server.Arch}}')
 # Builds run in a Go container so the only local requirement is Docker.
 GO_RUN = docker run --rm -v $(CURDIR):/src -w /src \
 	-v hud-otelcol-gomod:/go/pkg/mod -v hud-otelcol-gocache:/root/.cache/go-build \
-	-e CGO_ENABLED=0 -e GOOS=linux -e GOARCH=$(ARCH) $(GO_IMAGE)
+	-e CGO_ENABLED=0 -e GOFLAGS=-buildvcs=false -e GOOS=linux -e GOARCH=$(ARCH) $(GO_IMAGE)
 
 .PHONY: build image smoke clean
 
