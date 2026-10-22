@@ -13,6 +13,8 @@ It is not a fork: `manifest.yaml` lists upstream modules at pinned versions, and
 
 Every config written for this distribution also runs on `otel/opentelemetry-collector-contrib`, which is the fallback.
 
+Owner: [@ilansh](https://github.com/ilansh). The owner reviews bump PRs and handles CVE reports.
+
 ## Artifacts
 
 - Image: `ghcr.io/code-hud/hud-otel-collector:<version>` (multi-arch: `linux/amd64`, `linux/arm64`), plus `:latest`.
