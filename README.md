@@ -23,6 +23,25 @@ Owner: [@ilansh](https://github.com/ilansh). The owner reviews bump PRs and hand
 Versions follow the upstream `opentelemetry-collector-releases` version (`0.163.2`). A rebuild of the
 same upstream version (for example a Go security fix) is tagged `v0.163.2-hud.1`.
 
+## Verifying artifacts
+
+Images and `checksums.txt` are signed keyless with [cosign](https://github.com/sigstore/cosign) from the release
+workflow. Each archive has an SPDX SBOM (`*.sbom.json`) on the release.
+
+```sh
+ID='https://github.com/code-hud/hud-otel-collector/.github/workflows/release.yaml@.*'
+ISSUER=https://token.actions.githubusercontent.com
+
+# Image
+cosign verify ghcr.io/code-hud/hud-otel-collector:<version> \
+  --certificate-identity-regexp "$ID" --certificate-oidc-issuer "$ISSUER"
+
+# Binaries: verify the checksums file, then the archive against it
+cosign verify-blob checksums.txt --bundle checksums.txt.sigstore.json \
+  --certificate-identity-regexp "$ID" --certificate-oidc-issuer "$ISSUER"
+sha256sum --ignore-missing -c checksums.txt
+```
+
 ## Local development
 
 Only Docker is required; Go runs in a container.
