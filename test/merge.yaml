@@ -1,0 +1,31 @@
+# The pod-merging pipeline, exported to a local Prometheus.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  transform/drop_pod:
+    metric_statements:
+      - context: resource
+        statements: ['delete_key(attributes, "service.instance.id")']
+  transform/restamp:
+    metric_statements:
+      - context: datapoint
+        statements: ['set(start_time, Now())', 'set(time, Now())']
+  deltatocumulative:
+    max_stale: 1h
+  interval:
+    interval: 2s
+
+exporters:
+  prometheusremotewrite:
+    endpoint: ${env:REMOTE_WRITE_URL}
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [transform/drop_pod, transform/restamp, deltatocumulative, interval]
+      exporters: [prometheusremotewrite]

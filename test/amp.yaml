@@ -1,0 +1,39 @@
+# AMP export with SigV4. Only validated (no AWS credentials in CI).
+extensions:
+  health_check:
+  sigv4auth:
+    region: us-east-1
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+      http:
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+  deltatocumulative:
+  interval:
+
+exporters:
+  prometheusremotewrite:
+    endpoint: https://aps-workspaces.us-east-1.amazonaws.com/workspaces/ws-example/api/v1/remote_write
+    auth:
+      authenticator: sigv4auth
+  otlphttp:
+    endpoint: http://localhost:4318
+  debug:
+
+service:
+  extensions: [health_check, sigv4auth]
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, deltatocumulative, interval]
+      exporters: [prometheusremotewrite, debug]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter]
+      exporters: [otlphttp]
