@@ -11,7 +11,7 @@ GO_RUN = docker run --rm -v $(CURDIR):/src -w /src \
 .PHONY: build image smoke clean
 
 build:
-	$(GO_RUN) sh -c 'go install go.opentelemetry.io/collector/cmd/builder@$(OCB_VERSION) && builder --config manifest.yaml'
+	$(GO_RUN) sh -c 'go install go.opentelemetry.io/collector/cmd/builder@$(OCB_VERSION) && builder --config manifest.yaml && chown -R $(shell id -u):$(shell id -g) _build'
 
 image: build
 	docker build -t $(IMAGE) -f Dockerfile _build
