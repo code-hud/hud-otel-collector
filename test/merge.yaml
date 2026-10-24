@@ -6,6 +6,9 @@ receivers:
         endpoint: 0.0.0.0:4318
 
 processors:
+  # Serializes concurrent pod requests: re-stamping and deltatocumulative aren't
+  # atomic, so without it a point stamped earlier can land later and be dropped.
+  batch:
   transform/drop_pod:
     metric_statements:
       - context: resource
@@ -27,5 +30,5 @@ service:
   pipelines:
     metrics:
       receivers: [otlp]
-      processors: [transform/drop_pod, transform/restamp, deltatocumulative, interval]
+      processors: [batch, transform/drop_pod, transform/restamp, deltatocumulative, interval]
       exporters: [prometheusremotewrite]

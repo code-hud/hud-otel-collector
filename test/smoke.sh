@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Two fake pods send delta counters; the collector must merge them into one
+# Five fake pods send delta counters concurrently; the collector must merge them into one
 # Prometheus series whose value is the sum of all deltas.
 set -euo pipefail
 
@@ -14,7 +14,7 @@ cleanup
 
 echo "--- components"
 components=$(docker run --rm "$IMAGE" components)
-for c in otlp transform delta_to_cumulative interval prometheus_remote_write sigv4auth; do
+for c in otlp batch transform delta_to_cumulative interval prometheus_remote_write sigv4auth; do
   grep -q "name: $c\$" <<<"$components" || { echo "missing component: $c"; exit 1; }
 done
 
@@ -43,16 +43,19 @@ send() { # pod value
 EOF
 }
 
-echo "--- send 2 pods x 3 deltas of 5"
-for _ in 1 2 3; do send pod-a 5; send pod-b 5; sleep 0.5; done
+echo "--- send 5 pods x 10 deltas of 1, concurrently"
+for _ in $(seq 10); do
+  for p in a b c d e; do send "pod-$p" 1 & done
+  wait
+done
 
 query() { curl -s localhost:19090/api/v1/query --data-urlencode "query=$1" | sed -n 's/.*"value":\[[^,]*,"\([^"]*\)"\].*/\1/p'; }
 
 for _ in $(seq 30); do
   total=$(query 'sum(hud_smoke_total)'); series=$(query 'count(hud_smoke_total)')
-  [ "$total" = "30" ] && [ "$series" = "1" ] && { echo "PASS: total=$total series=$series"; exit 0; }
+  [ "$total" = "50" ] && [ "$series" = "1" ] && { echo "PASS: total=$total series=$series"; exit 0; }
   sleep 1
 done
-echo "FAIL: total=${total:-none} series=${series:-none} (want 30 and 1)"
+echo "FAIL: total=${total:-none} series=${series:-none} (want 50 and 1)"
 docker logs smoke-collector | tail -30
 exit 1
