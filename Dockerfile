@@ -7,7 +7,8 @@ ARG USER_UID=10001
 ARG USER_GID=10001
 USER ${USER_UID}:${USER_GID}
 COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
-COPY --chmod=755 hud-otelcol /hud-otelcol
+ARG TARGETPLATFORM
+COPY --chmod=755 $TARGETPLATFORM/hud-otelcol /hud-otelcol
 ENTRYPOINT ["/hud-otelcol"]
 # 4317/4318: OTLP gRPC/HTTP, 13133: health check
 EXPOSE 4317 4318 13133

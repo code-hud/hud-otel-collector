@@ -14,7 +14,8 @@ build:
 	$(GO_RUN) sh -c 'go install go.opentelemetry.io/collector/cmd/builder@$(OCB_VERSION) && builder --config manifest.yaml && chown -R $(shell id -u):$(shell id -g) _build'
 
 image: build
-	docker build -t $(IMAGE) -f Dockerfile _build
+	mkdir -p _build/linux/$(ARCH) && cp _build/hud-otelcol _build/linux/$(ARCH)/
+	docker build --platform linux/$(ARCH) -t $(IMAGE) -f Dockerfile _build
 
 smoke: image
 	IMAGE=$(IMAGE) ./test/smoke.sh
