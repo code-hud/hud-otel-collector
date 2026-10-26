@@ -3,13 +3,13 @@
 Use these separate stacks instead of the [one-stack deploy](README.md) when you already have an
 Observability Stack or an AMP workspace. Commands below run from the repository root.
 
-The collector stack creates an AMP workspace unless one is given, and grants the collector only
+The collector stack creates an AMP workspace unless you pass one, and grants the collector only
 `aps:RemoteWrite` on it. Without OSIS parameters, only metrics are sent.
 
 > **Test links.** The "Launch in CloudFormation" links below open the console in `us-east-1` with templates
 > from a temporary test bucket. They will move to the real public bucket later.
 
-`deploy/aws/ecs-fargate.yaml` runs the collector as a service in an existing cluster and VPC, reachable at
+`deploy/aws/ecs-fargate.yaml` runs the collector as a service in your existing ECS cluster and VPC, reachable at
 `http://hud-collector.hud.local:4318` (private DNS). Defaults: 1 vCPU, 4 GB, ARM64, 1 task.
 
 **1. Observability Stack** (skip if you already have one). `deploy/aws/observability.yaml` creates the same
@@ -32,7 +32,7 @@ OTLP logs URL of its OSIS pipeline (the pipeline must accept OTLP logs). The ins
 pipeline: `aws amp list-workspaces --alias <pipeline>` and `https://<IngestEndpointUrls[0]>/<pipeline>/v1/logs`.
 
 **2. Collector.** Subnets need outbound internet (NAT) to pull the image and reach AMP and OSIS. The task
-pulls the public `ghcr.io/code-hud/hud-otel-collector` image; to use a copy in this account's ECR, pass `Image`.
+pulls the public `ghcr.io/code-hud/hud-otel-collector` image; to use a copy in your account's ECR, pass `Image`.
 
 ```sh
 aws cloudformation deploy --stack-name hud-collector --template-file deploy/aws/ecs-fargate.yaml \
@@ -43,7 +43,7 @@ aws cloudformation deploy --stack-name hud-collector --template-file deploy/aws/
 
 [Launch in CloudFormation](https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/quickcreate?templateURL=https%3A%2F%2Fhud-cfn-test-736129612463.s3.amazonaws.com%2Ftest%2Fecs-fargate.yaml&stackName=hud-collector) (template: `deploy/aws/ecs-fargate.yaml`)
 
-**3. Apps.** Set `HUD_OTLP_ENDPOINT` and `HUD_OTLP_TEMPORALITY` to the stack's `OtlpEndpoint` and
+**3. Your apps.** Set `HUD_OTLP_ENDPOINT` and `HUD_OTLP_TEMPORALITY` in your apps to the stack's `OtlpEndpoint` and
 `OtlpTemporality` outputs. Metrics show up in the OpenSearch UI through its AMP data source (PromQL), and
 investigations in its logs.
 

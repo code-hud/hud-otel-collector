@@ -1,4 +1,4 @@
-# One series per app pod: keep each pod's id, no re-stamping. Apps may send deltas or running totals.
+# One series per app pod: keep each pod's id, no re-stamping. Your apps may send deltas or running totals.
 alternateConfig:
   service:
     pipelines:

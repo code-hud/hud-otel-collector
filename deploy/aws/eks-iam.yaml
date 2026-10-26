@@ -4,7 +4,7 @@ Description: IAM role that lets the Hud OpenTelemetry collector on EKS write to 
 Parameters:
   ClusterName:
     Type: String
-    Description: EKS cluster the collector runs in.
+    Description: Your EKS cluster the collector runs in.
   AuthMode:
     Type: String
     Default: PodIdentity
@@ -23,7 +23,7 @@ Parameters:
   AmpWorkspaceId:
     Type: String
     Default: ""
-    Description: Existing AMP workspace id (ws-...). Leave empty to create one.
+    Description: Your existing AMP workspace id (ws-...). Leave empty to create one.
 
 Rules:
   IrsaNeedsOidc:
