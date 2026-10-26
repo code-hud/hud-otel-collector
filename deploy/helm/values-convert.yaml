@@ -1,0 +1,6 @@
+# One series per app pod: keep each pod's id, no re-stamping. Apps may send deltas or running totals.
+alternateConfig:
+  service:
+    pipelines:
+      metrics:
+        processors: [memory_limiter, batch, delta_to_cumulative]

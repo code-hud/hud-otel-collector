@@ -11,6 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: make smoke
+      - run: ./test/deploy.sh
       - uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: hud-otelcol:dev

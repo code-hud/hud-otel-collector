@@ -1,0 +1,293 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Hud OpenTelemetry collector on ECS Fargate, writing to Amazon Managed Service for Prometheus.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: { default: Where to run }
+        Parameters: [ClusterName, VpcId, SubnetIds, AssignPublicIp, AllowedCidr]
+      - Label: { default: Collector }
+        Parameters: [Mode, ExportInterval, Cpu, Memory, CpuArchitecture, DesiredCount, Image]
+      - Label: { default: Destination }
+        Parameters: [AmpWorkspaceId, OsisLogsUrl, OsisPipelineName]
+      - Label: { default: Discovery }
+        Parameters: [DnsNamespace]
+
+Parameters:
+  ClusterName:
+    Type: String
+    Description: Existing ECS cluster to run the collector in.
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Subnets for the collector tasks. They need outbound internet (NAT or public IP) to pull the image and reach AMP.
+  AssignPublicIp:
+    Type: String
+    Default: DISABLED
+    AllowedValues: [DISABLED, ENABLED]
+  AllowedCidr:
+    Type: String
+    Description: CIDR of the apps that send metrics (usually the VPC CIDR). Opens port 4318 to it.
+    AllowedPattern: ^\d{1,3}(\.\d{1,3}){3}/\d{1,2}$
+  Mode:
+    Type: String
+    Default: merge
+    AllowedValues: [merge, convert]
+    Description: merge = one series per collector task (apps must send deltas). convert = one series per app pod.
+  ExportInterval:
+    Type: String
+    Default: 60s
+    Description: How often merged totals are written (merge mode only).
+  Cpu:
+    Type: Number
+    Default: 1024
+    AllowedValues: [512, 1024, 2048, 4096]
+  Memory:
+    Type: Number
+    Default: 4096
+    Description: MiB. 4096 is recommended. Must be a valid Fargate size for the chosen Cpu.
+  CpuArchitecture:
+    Type: String
+    Default: ARM64
+    AllowedValues: [ARM64, X86_64]
+  DesiredCount:
+    Type: Number
+    Default: 1
+    MinValue: 1
+  Image:
+    Type: String
+    Default: ghcr.io/code-hud/hud-otel-collector:0.163.2-hud.2
+    Description: Public image, or a copy in this account's ECR.
+  AmpWorkspaceId:
+    Type: String
+    Default: ""
+    Description: Existing AMP workspace id (ws-...). Leave empty to create one.
+  OsisLogsUrl:
+    Type: String
+    Default: ""
+    Description: Optional. Full OTLP logs URL of an OpenSearch Ingestion pipeline, e.g. https://<pipeline>.us-east-1.osis.amazonaws.com/<pipeline-name>/v1/logs. Sends Hud investigations to OpenSearch.
+  OsisPipelineName:
+    Type: String
+    Default: ""
+    Description: Name of that pipeline (required with OsisLogsUrl), for osis:Ingest.
+  DnsNamespace:
+    Type: String
+    Default: hud.local
+    Description: Private DNS namespace created in the VPC. Apps send to hud-collector.<namespace>:4318.
+
+Rules:
+  OsisNeedsPipelineName:
+    RuleCondition: !Not [!Equals [!Ref OsisLogsUrl, ""]]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref OsisPipelineName, ""]]
+        AssertDescription: OsisPipelineName is required when OsisLogsUrl is set.
+
+Conditions:
+  CreateAmp: !Equals [!Ref AmpWorkspaceId, ""]
+  Merge: !Equals [!Ref Mode, merge]
+  Logs: !Not [!Equals [!Ref OsisLogsUrl, ""]]
+
+Resources:
+  AmpWorkspace:
+    Type: AWS::APS::Workspace
+    Condition: CreateAmp
+    Properties:
+      Alias: !Sub ${AWS::StackName}
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /hud/${AWS::StackName}
+      RetentionInDays: 14
+
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: amp-remote-write
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: aps:RemoteWrite
+                Resource: !If
+                  - CreateAmp
+                  - !GetAtt AmpWorkspace.Arn
+                  - !Sub arn:${AWS::Partition}:aps:${AWS::Region}:${AWS::AccountId}:workspace/${AmpWorkspaceId}
+        - !If
+          - Logs
+          - PolicyName: osis-ingest
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action: osis:Ingest
+                  Resource: !Sub arn:${AWS::Partition}:osis:${AWS::Region}:${AWS::AccountId}:pipeline/${OsisPipelineName}
+          - !Ref AWS::NoValue
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Hud collector OTLP/HTTP
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 4318
+          ToPort: 4318
+          CidrIp: !Ref AllowedCidr
+
+  Namespace:
+    Type: AWS::ServiceDiscovery::PrivateDnsNamespace
+    Properties:
+      Name: !Ref DnsNamespace
+      Vpc: !Ref VpcId
+
+  DiscoveryService:
+    Type: AWS::ServiceDiscovery::Service
+    Properties:
+      Name: hud-collector
+      NamespaceId: !Ref Namespace
+      DnsConfig:
+        DnsRecords: [{ Type: A, TTL: 10 }]
+      HealthCheckCustomConfig: { FailureThreshold: 1 }
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub ${AWS::StackName}
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: !Ref Cpu
+      Memory: !Ref Memory
+      RuntimePlatform:
+        OperatingSystemFamily: LINUX
+        CpuArchitecture: !Ref CpuArchitecture
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: collector
+          Image: !Ref Image
+          Essential: true
+          Command: [--config, env:HUD_OTELCOL_CONFIG]
+          PortMappings: [{ ContainerPort: 4318, Protocol: tcp }]
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: collector
+          Environment:
+            - Name: AMP_REMOTE_WRITE_URL
+              Value: !Sub
+                - https://aps-workspaces.${AWS::Region}.amazonaws.com/workspaces/${Ws}/api/v1/remote_write
+                - Ws: !If [CreateAmp, !GetAtt AmpWorkspace.WorkspaceId, !Ref AmpWorkspaceId]
+            # merge: the pod id is replaced by this task's hostname, so each task writes only its own series.
+            # batch serializes concurrent requests; without it, re-stamped points can reach delta_to_cumulative out of order and be dropped.
+            - Name: HUD_OTELCOL_CONFIG
+              Value: !Sub
+                - |
+                  extensions:
+                    health_check:
+                      endpoint: 0.0.0.0:13133
+                    sigv4auth:
+                      region: ${AWS::Region}
+                      service: aps
+                    ${OsisAuth}
+                  receivers:
+                    otlp:
+                      protocols:
+                        http:
+                          endpoint: 0.0.0.0:4318
+                  processors:
+                    memory_limiter:
+                      check_interval: 1s
+                      limit_percentage: 80
+                      spike_limit_percentage: 20
+                    batch:
+                    transform/collector_id:
+                      metric_statements:
+                        - context: resource
+                          statements: ['set(attributes["service.instance.id"], "${!env:HOSTNAME}")']
+                    transform/restamp:
+                      metric_statements:
+                        - context: datapoint
+                          statements: ['set(start_time, Now())', 'set(time, Now())']
+                    delta_to_cumulative:
+                      max_stale: 1h
+                    interval:
+                      interval: ${ExportInterval}
+                  exporters:
+                    prometheus_remote_write:
+                      endpoint: ${!env:AMP_REMOTE_WRITE_URL}
+                      auth:
+                        authenticator: sigv4auth
+                    ${OsisExporter}
+                  service:
+                    extensions: ${Extensions}
+                    pipelines:
+                      metrics:
+                        receivers: [otlp]
+                        processors: ${Processors}
+                        exporters: [prometheus_remote_write]
+                      ${LogsPipeline}
+                - Processors: !If
+                    - Merge
+                    - "[memory_limiter, batch, transform/collector_id, transform/restamp, delta_to_cumulative, interval]"
+                    - "[memory_limiter, batch, delta_to_cumulative]"
+                  # Investigations: OTLP logs to OpenSearch Ingestion, only when OsisLogsUrl is set.
+                  OsisAuth: !If [Logs, !Sub "sigv4auth/osis: {region: '${AWS::Region}', service: osis}", ""]
+                  OsisExporter: !If [Logs, !Sub "otlp_http/osis: {logs_endpoint: '${OsisLogsUrl}', auth: {authenticator: sigv4auth/osis}, compression: none}", ""]
+                  Extensions: !If [Logs, "[health_check, sigv4auth, sigv4auth/osis]", "[health_check, sigv4auth]"]
+                  LogsPipeline: !If [Logs, "logs: {receivers: [otlp], processors: [memory_limiter, batch], exporters: [otlp_http/osis]}", ""]
+
+  Service:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: hud-collector
+      Cluster: !Ref ClusterName
+      LaunchType: FARGATE
+      DesiredCount: !Ref DesiredCount
+      TaskDefinition: !Ref TaskDefinition
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: !Ref AssignPublicIp
+          SecurityGroups: [!Ref SecurityGroup]
+          Subnets: !Ref SubnetIds
+      ServiceRegistries:
+        - RegistryArn: !GetAtt DiscoveryService.Arn
+
+Outputs:
+  OtlpEndpoint:
+    Description: Set HUD_OTLP_ENDPOINT in your apps to this.
+    Value: !Sub http://hud-collector.${DnsNamespace}:4318
+  OtlpTemporality:
+    Description: Set HUD_OTLP_TEMPORALITY in your apps to this.
+    Value: !If [Merge, delta, cumulative]
+  Investigations:
+    Description: Where Hud investigations go.
+    Value: !If [Logs, !Ref OsisLogsUrl, "not sent (OsisLogsUrl is empty)"]
+  AmpWorkspaceId:
+    Value: !If [CreateAmp, !GetAtt AmpWorkspace.WorkspaceId, !Ref AmpWorkspaceId]
+  AmpQueryUrl:
+    Value: !Sub
+      - https://aps-workspaces.${AWS::Region}.amazonaws.com/workspaces/${Ws}/api/v1/query
+      - Ws: !If [CreateAmp, !GetAtt AmpWorkspace.WorkspaceId, !Ref AmpWorkspaceId]
