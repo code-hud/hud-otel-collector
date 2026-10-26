@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Lints the CloudFormation templates, checks the Observability Stack pipeline and setup code, and validates every collector config they and the Helm values
-# render (both modes) against the built image.
+# Lints the CloudFormation templates, checks unified-ecs.yaml matches scripts/unify.py, checks the Observability Stack
+# pipeline and setup code, and validates every collector config they and the Helm values render (both modes) against
+# the built image.
 set -euo pipefail
 
 IMAGE=${IMAGE:-hud-otelcol:dev}
@@ -12,6 +13,9 @@ trap 'rm -rf "$OUT"' EXIT
 echo "--- cfn-lint"
 docker run --rm -v "$ROOT/deploy:/d:ro" python:3.13-slim sh -c \
   'pip install -q cfn-lint 2>/dev/null && cfn-lint /d/aws/*.yaml'
+
+echo "--- unified-ecs.yaml is up to date"
+docker run --rm -v "$ROOT:/r:ro" python:3.13-slim sh -c 'pip install -q pyyaml 2>/dev/null && python /r/scripts/unify.py --check'
 
 echo "--- observability.yaml pipeline body and setup code"
 docker run --rm -v "$ROOT/deploy:/d:ro" python:3.13-slim sh -c 'pip install -q pyyaml 2>/dev/null && python - <<EOF

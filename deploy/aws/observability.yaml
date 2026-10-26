@@ -44,8 +44,11 @@ Resources:
       Name: !Ref Name
       Type: SEARCH
 
+  # Keeps the metrics if the stack is deleted or the workspace replaced.
   Workspace:
     Type: AWS::APS::Workspace
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       Alias: !Ref Name
 
@@ -444,6 +447,9 @@ Outputs:
       - Host: !Select [0, !GetAtt Pipeline.IngestEndpointUrls]
   OsisPipelineName:
     Description: Pass to the collector stack as OsisPipelineName.
+    Value: !Ref Name
+  CollectionName:
+    Description: Pass to the access stack (hud-access.yaml) as CollectionName.
     Value: !Ref Name
   OtlpEndpoint:
     Description: Base OTLP endpoint for other OTel collectors (append /v1/logs, /v1/traces or /v1/metrics; SigV4, service osis).

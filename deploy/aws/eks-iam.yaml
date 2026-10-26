@@ -97,6 +97,9 @@ Outputs:
     Value: !Sub
       - https://aps-workspaces.${AWS::Region}.amazonaws.com/workspaces/${Ws}/api/v1/remote_write
       - Ws: !If [CreateAmp, !GetAtt AmpWorkspace.WorkspaceId, !Ref AmpWorkspaceId]
+  AmpWorkspaceId:
+    Description: Pass to the access stack (hud-access.yaml) as AmpWorkspaceId.
+    Value: !If [CreateAmp, !GetAtt AmpWorkspace.WorkspaceId, !Ref AmpWorkspaceId]
   AmpQueryUrl:
     Value: !Sub
       - https://aps-workspaces.${AWS::Region}.amazonaws.com/workspaces/${Ws}/api/v1/query

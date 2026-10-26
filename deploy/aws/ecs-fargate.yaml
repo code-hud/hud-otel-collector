@@ -280,8 +280,8 @@ Outputs:
     Description: Set HUD_OTLP_ENDPOINT in your apps to this.
     Value: !Sub http://hud-collector.${DnsNamespace}:4318
   OtlpTemporality:
-    Description: Set HUD_OTLP_TEMPORALITY in your apps to this.
-    Value: !If [Merge, delta, cumulative]
+    Description: Set HUD_OTLP_TEMPORALITY in your apps to this. The Hud SDK only sends deltas, which both modes accept.
+    Value: delta
   Investigations:
     Description: Where Hud investigations go.
     Value: !If [Logs, !Ref OsisLogsUrl, "not sent (OsisLogsUrl is empty)"]
