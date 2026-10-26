@@ -22,8 +22,7 @@ Your collection, pipeline, workspace and UI app aren't changed, except as below.
 aws cloudformation deploy --stack-name hud --template-file deploy/aws/unified-ecs-existing-ui.yaml \
   --capabilities CAPABILITY_IAM --parameter-overrides \
   ClusterName=<cluster> VpcId=<vpc> SubnetIds=<subnet-a>,<subnet-b> AllowedCidr=<vpc cidr> \
-  ExternalId=<external id from Hud> ExistingUiAppId=<your OpenSearch UI app id, optional> \
-  DataAccessPrincipals=<role ARNs that read the data, optional>
+  ExternalId=<external id from Hud> ExistingUiAppId=<your OpenSearch UI app id, optional>
 ```
 
 [Launch in CloudFormation](https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/quickcreate?templateURL=https%3A%2F%2Fhud-cfn-test-736129612463.s3.amazonaws.com%2Ftest%2Funified-ecs-existing-ui.yaml&stackName=hud) (template: `deploy/aws/unified-ecs-existing-ui.yaml`)
@@ -32,7 +31,7 @@ aws cloudformation deploy --stack-name hud --template-file deploy/aws/unified-ec
 to add Hud's collection and AMP workspace (as a PromQL data source) to it. The stack reads your app's data sources
 and adds its two; it never removes yours. Deleting the stack, or changing `ExistingUiAppId`, removes only those
 two. No workspace is created in your app: to use Hud's data in one of your workspaces, associate the two data
-sources with it in the workspace's settings, and add the roles you sign in with to `DataAccessPrincipals`
+sources with it in the workspace's settings. Anyone in your account can read Hud's collection
 ([Who can read the collection](README.md#who-can-read-the-collection)).
 
 Then point your apps at the stack's `OtlpEndpoint` and `OtlpTemporality` outputs, as in the

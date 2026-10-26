@@ -19,13 +19,13 @@ Parameters:
   ServiceMapWindow:
     Type: String
     Default: 30s
-  DataAccessPrincipals:
+  DataWritePrincipals:
     Type: String
     Default: ""
-    Description: Optional. Comma-separated IAM role or user ARNs (no spaces) that may read the collection, e.g. the roles you sign in to the OpenSearch UI with. Empty means only the pipeline, the OpenSearch UI setup and Hud's role (where deployed) can use it.
+    Description: Optional. Comma-separated IAM role or user ARNs (no spaces) that may also write to the collection (create and update indexes and documents). Everyone in your account can already read it; empty means only the pipeline writes.
 
 Conditions:
-  HasDataAccessPrincipals: !Not [!Equals [!Ref DataAccessPrincipals, ""]]
+  HasDataWritePrincipals: !Not [!Equals [!Ref DataWritePrincipals, ""]]
 
 Resources:
   EncryptionPolicy:
@@ -79,8 +79,9 @@ Resources:
                 Action: aps:RemoteWrite
                 Resource: !GetAtt Workspace.Arn
 
-  # Only the pipeline writes. Data access policies have no deny, so no rule names the account root: that would let
-  # every role in the account with aoss:APIAccessAll write here, Hud's included.
+  # The pipeline writes; everyone in the account (with aoss:APIAccessAll in IAM) reads, which covers OpenSearch UI
+  # users and the UI setup. Data access policies have no deny, so the root rule stays read-only: a writable one would
+  # let every role in the account write here, Hud's included.
   DataAccessPolicy:
     Type: AWS::OpenSearchServerless::AccessPolicy
     Properties:
@@ -90,22 +91,26 @@ Resources:
         [{"Rules":[
         {"ResourceType":"index","Resource":["index/${Name}/*"],"Permission":["aoss:CreateIndex","aoss:UpdateIndex","aoss:DescribeIndex","aoss:ReadDocument","aoss:WriteDocument"]},
         {"ResourceType":"collection","Resource":["collection/${Name}"],"Permission":["aoss:CreateCollectionItems","aoss:DeleteCollectionItems","aoss:UpdateCollectionItems","aoss:DescribeCollectionItems"]}],
-        "Principal":["${PipelineRole.Arn}"]}]
+        "Principal":["${PipelineRole.Arn}"]},
+        {"Rules":[
+        {"ResourceType":"index","Resource":["index/${Name}/*"],"Permission":["aoss:DescribeIndex","aoss:ReadDocument"]},
+        {"ResourceType":"collection","Resource":["collection/${Name}"],"Permission":["aoss:DescribeCollectionItems"]}],
+        "Principal":["arn:${AWS::Partition}:iam::${AWS::AccountId}:root"]}]
 
-  # Read-only, for the people and tools that use the data (e.g. in the OpenSearch UI).
-  ReadersAccessPolicy:
+  # Write access as earlier versions gave the whole account (the pipeline's permissions), for the roles you name.
+  WritersAccessPolicy:
     Type: AWS::OpenSearchServerless::AccessPolicy
-    Condition: HasDataAccessPrincipals
+    Condition: HasDataWritePrincipals
     Properties:
-      Name: !Sub ${Name}-read
+      Name: !Sub ${Name}-write
       Type: data
       Policy: !Sub
         - >-
           [{"Rules":[
-          {"ResourceType":"index","Resource":["index/${Name}/*"],"Permission":["aoss:DescribeIndex","aoss:ReadDocument"]},
-          {"ResourceType":"collection","Resource":["collection/${Name}"],"Permission":["aoss:DescribeCollectionItems"]}],
+          {"ResourceType":"index","Resource":["index/${Name}/*"],"Permission":["aoss:CreateIndex","aoss:UpdateIndex","aoss:DescribeIndex","aoss:ReadDocument","aoss:WriteDocument"]},
+          {"ResourceType":"collection","Resource":["collection/${Name}"],"Permission":["aoss:CreateCollectionItems","aoss:DeleteCollectionItems","aoss:UpdateCollectionItems","aoss:DescribeCollectionItems"]}],
           "Principal":["${Principals}"]}]
-        - Principals: !Join ['","', !Split [",", !Ref DataAccessPrincipals]]
+        - Principals: !Join ['","', !Split [",", !Ref DataWritePrincipals]]
 
   # Rendered from the official installer's serverless pipeline (aws/cli-installer/src/render.mjs, renderPipeline).
   Pipeline:

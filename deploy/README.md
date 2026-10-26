@@ -38,14 +38,14 @@ workspace is kept if the stack is deleted.
 aws cloudformation deploy --stack-name hud --template-file deploy/aws/unified-ecs.yaml \
   --capabilities CAPABILITY_IAM --parameter-overrides \
   ClusterName=<cluster> VpcId=<vpc> SubnetIds=<subnet-a>,<subnet-b> AllowedCidr=<vpc cidr> \
-  ExternalId=<external id from Hud> DataAccessPrincipals=<role ARNs that read the data, optional>
+  ExternalId=<external id from Hud>
 ```
 
 [Launch in CloudFormation](https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/quickcreate?templateURL=https%3A%2F%2Fhud-cfn-test-736129612463.s3.amazonaws.com%2Ftest%2Funified-ecs.yaml&stackName=hud) (template: `deploy/aws/unified-ecs.yaml`)
 
 **Your apps.** Set `HUD_OTLP_ENDPOINT` and `HUD_OTLP_TEMPORALITY` in your apps to the stack's `OtlpEndpoint` and
 `OtlpTemporality` outputs. Metrics show up in the OpenSearch UI (`DashboardUrl` output) through its AMP data
-source (PromQL), and investigations in its logs, for the roles in `DataAccessPrincipals` (see
+source (PromQL), and investigations in its logs, for anyone in your account (see
 [Who can read the collection](#who-can-read-the-collection)).
 
 ### Already running the observability stack?
@@ -59,8 +59,7 @@ add Hud's data to your OpenSearch UI app (details in
 aws cloudformation deploy --stack-name hud --template-file deploy/aws/unified-ecs-existing-ui.yaml \
   --capabilities CAPABILITY_IAM --parameter-overrides \
   ClusterName=<cluster> VpcId=<vpc> SubnetIds=<subnet-a>,<subnet-b> AllowedCidr=<vpc cidr> \
-  ExternalId=<external id from Hud> ExistingUiAppId=<your OpenSearch UI app id, optional> \
-  DataAccessPrincipals=<role ARNs that read the data, optional>
+  ExternalId=<external id from Hud> ExistingUiAppId=<your OpenSearch UI app id, optional>
 ```
 
 [Launch in CloudFormation](https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/quickcreate?templateURL=https%3A%2F%2Fhud-cfn-test-736129612463.s3.amazonaws.com%2Ftest%2Funified-ecs-existing-ui.yaml&stackName=hud) (template: `deploy/aws/unified-ecs-existing-ui.yaml`)
@@ -111,13 +110,18 @@ collector and Observability Stack too), or delete the role in IAM.
 
 ### Who can read the collection
 
-The collection's data access policies name each principal; none grants your account root, so having
-`aoss:APIAccessAll` in IAM isn't enough. They allow:
-- the OSIS pipeline role: write (the only writer);
-- the OpenSearch UI setup Lambda (one-stack deploy only) and Hud's role: read;
-- the IAM roles or users in `DataAccessPrincipals` (comma-separated ARNs, no spaces): read. Empty by default, so
-  add the roles you sign in to the OpenSearch UI with; they also need `aoss:APIAccessAll` and
-  `aoss:DashboardsAccessAll` in IAM. For more access, add your own data access policy next to these.
+The collection's data access policies allow:
+- the OSIS pipeline role: write (the only writer by default);
+- your account root: read (describe the collection and its indexes, read documents), so any IAM role or user in
+  your account that also has `aoss:APIAccessAll` (and `aoss:DashboardsAccessAll` for the OpenSearch UI) in IAM can
+  read the data. This covers the OpenSearch UI setup and your OpenSearch UI users. Index patterns, saved searches,
+  visualizations and dashboards are stored in the OpenSearch UI app, not in the collection, so read access is enough
+  for them;
+- Hud's role: read;
+- the IAM roles or users in `DataWritePrincipals` (optional, comma-separated ARNs, no spaces): write, i.e. create and
+  update indexes and documents, as the pipeline can. Empty by default. Use it only for something that writes to
+  the collection itself, such as index or document requests in Dev Tools.
 
-Deployed an earlier version? Its policy granted your account root. Updating the stack removes that grant, so the
-OpenSearch UI shows no data for anyone not in `DataAccessPrincipals`; pass your roles' ARNs in the same update.
+Deployed an earlier version? Its policy gave your account root read and write. Updating the stack makes everyone
+in your account read-only; what the OpenSearch UI shows doesn't change. If something of yours writes to the
+collection, pass its role in `DataWritePrincipals` in the same update.

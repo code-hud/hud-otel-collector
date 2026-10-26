@@ -11,7 +11,7 @@ Metadata:
       - MinUnits
       - MaxUnits
       - ServiceMapWindow
-      - DataAccessPrincipals
+      - DataWritePrincipals
     - Label:
         default: Where to run
       Parameters:
@@ -60,10 +60,10 @@ Parameters:
   ServiceMapWindow:
     Type: String
     Default: 30s
-  DataAccessPrincipals:
+  DataWritePrincipals:
     Type: String
     Default: ''
-    Description: Optional. Comma-separated IAM role or user ARNs (no spaces) that may read the collection, e.g. the roles you sign in to the OpenSearch UI with. Empty means only the pipeline, the OpenSearch UI setup and Hud's role (where deployed) can use it.
+    Description: Optional. Comma-separated IAM role or user ARNs (no spaces) that may also write to the collection (create and update indexes and documents). Everyone in your account can already read it; empty means only the pipeline writes.
   ClusterName:
     Type: String
     Description: Your existing ECS cluster to run the collector in.
@@ -153,9 +153,9 @@ Rules:
         - 0.0.0.0/0
       AssertDescription: AllowedCidr must not be 0.0.0.0/0. The tasks have public IPs, so that would open the collector to the internet.
 Conditions:
-  HasDataAccessPrincipals: !Not
+  HasDataWritePrincipals: !Not
   - !Equals
-    - !Ref 'DataAccessPrincipals'
+    - !Ref 'DataWritePrincipals'
     - ''
   Merge: !Equals
   - !Ref 'Mode'
@@ -311,7 +311,7 @@ Resources:
                   - !Ref 'AWS::StackId'
       Type: data
       Policy: !Sub
-      - '[{"Rules":[ {"ResourceType":"index","Resource":["index/${Name}/*"],"Permission":["aoss:CreateIndex","aoss:UpdateIndex","aoss:DescribeIndex","aoss:ReadDocument","aoss:WriteDocument"]}, {"ResourceType":"collection","Resource":["collection/${Name}"],"Permission":["aoss:CreateCollectionItems","aoss:DeleteCollectionItems","aoss:UpdateCollectionItems","aoss:DescribeCollectionItems"]}], "Principal":["${PipelineRole.Arn}"]}]'
+      - '[{"Rules":[ {"ResourceType":"index","Resource":["index/${Name}/*"],"Permission":["aoss:CreateIndex","aoss:UpdateIndex","aoss:DescribeIndex","aoss:ReadDocument","aoss:WriteDocument"]}, {"ResourceType":"collection","Resource":["collection/${Name}"],"Permission":["aoss:CreateCollectionItems","aoss:DeleteCollectionItems","aoss:UpdateCollectionItems","aoss:DescribeCollectionItems"]}], "Principal":["${PipelineRole.Arn}"]}, {"Rules":[ {"ResourceType":"index","Resource":["index/${Name}/*"],"Permission":["aoss:DescribeIndex","aoss:ReadDocument"]}, {"ResourceType":"collection","Resource":["collection/${Name}"],"Permission":["aoss:DescribeCollectionItems"]}], "Principal":["arn:${AWS::Partition}:iam::${AWS::AccountId}:root"]}]'
       - Name: !Join
         - '-'
         - - !Ref 'NamePrefix'
@@ -324,12 +324,12 @@ Resources:
                 - !Split
                   - /
                   - !Ref 'AWS::StackId'
-  ReadersAccessPolicy:
+  WritersAccessPolicy:
     Type: AWS::OpenSearchServerless::AccessPolicy
-    Condition: HasDataAccessPrincipals
+    Condition: HasDataWritePrincipals
     Properties:
       Name: !Sub
-      - ${Name}-read
+      - ${Name}-write
       - Name: !Join
         - '-'
         - - !Ref 'NamePrefix'
@@ -344,12 +344,12 @@ Resources:
                   - !Ref 'AWS::StackId'
       Type: data
       Policy: !Sub
-      - '[{"Rules":[ {"ResourceType":"index","Resource":["index/${Name}/*"],"Permission":["aoss:DescribeIndex","aoss:ReadDocument"]}, {"ResourceType":"collection","Resource":["collection/${Name}"],"Permission":["aoss:DescribeCollectionItems"]}], "Principal":["${Principals}"]}]'
+      - '[{"Rules":[ {"ResourceType":"index","Resource":["index/${Name}/*"],"Permission":["aoss:CreateIndex","aoss:UpdateIndex","aoss:DescribeIndex","aoss:ReadDocument","aoss:WriteDocument"]}, {"ResourceType":"collection","Resource":["collection/${Name}"],"Permission":["aoss:CreateCollectionItems","aoss:DeleteCollectionItems","aoss:UpdateCollectionItems","aoss:DescribeCollectionItems"]}], "Principal":["${Principals}"]}]'
       - Principals: !Join
         - '","'
         - !Split
           - ','
-          - !Ref 'DataAccessPrincipals'
+          - !Ref 'DataWritePrincipals'
         Name: !Join
         - '-'
         - - !Ref 'NamePrefix'
