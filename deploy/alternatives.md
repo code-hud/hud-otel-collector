@@ -1,13 +1,45 @@
 # Deploying with existing resources (ECS Fargate)
 
-Use these separate stacks instead of the [one-stack deploy](README.md) when you already have an
-Observability Stack or an AMP workspace. Commands below run from the repository root.
-
-The collector stack creates an AMP workspace unless you pass one, and grants the collector only
-`aps:RemoteWrite` on it. Without OSIS parameters, only metrics are sent.
+Use these instead of the [one-stack deploy](README.md) when you already run the Observability Stack or have an
+AMP workspace. Commands below run from the repository root.
 
 > **Test links.** The "Launch in CloudFormation" links below open the console in `us-east-1` with templates
 > from a temporary test bucket. They will move to the real public bucket later.
+
+## Next to your Observability Stack
+
+If you already run the [Observability Stack](https://github.com/opensearch-project/observability-stack),
+`deploy/aws/unified-ecs-existing-ui.yaml` gives Hud its own data resources next to yours, in one stack:
+- an OpenSearch Serverless collection, an OSIS pipeline and an AMP workspace, the same as the Observability
+  Stack's but without its OpenSearch UI app and dashboards. Their names are `NamePrefix` (default `hud`) plus a
+  suffix unique to the stack, e.g. `hud-1a2b3c4d`, so they can't clash with yours;
+- the collector on ECS Fargate, writing to them;
+- the read-only [Hud access](README.md#hud-access) role.
+
+Your collection, pipeline, workspace and UI app aren't changed, except as below.
+
+```sh
+aws cloudformation deploy --stack-name hud --template-file deploy/aws/unified-ecs-existing-ui.yaml \
+  --capabilities CAPABILITY_IAM --parameter-overrides \
+  ClusterName=<cluster> VpcId=<vpc> SubnetIds=<subnet-a>,<subnet-b> AllowedCidr=<vpc cidr> \
+  ExternalId=<external id from Hud> ExistingUiAppId=<your OpenSearch UI app id, optional>
+```
+
+[Launch in CloudFormation](https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/quickcreate?templateURL=https%3A%2F%2Fhud-cfn-test-736129612463.s3.amazonaws.com%2Ftest%2Funified-ecs-existing-ui.yaml&stackName=hud) (template: `deploy/aws/unified-ecs-existing-ui.yaml`)
+
+**Your OpenSearch UI app (optional).** Set `ExistingUiAppId` to your app's id (`aws opensearch list-applications`)
+to add Hud's collection and AMP workspace (as a PromQL data source) to it. The stack reads your app's data sources
+and adds its two; it never removes yours. Deleting the stack, or changing `ExistingUiAppId`, removes only those
+two. No workspace is created in your app: to use Hud's data in one of your workspaces, associate the two data
+sources with it in the workspace's settings.
+
+Then point your apps at the stack's `OtlpEndpoint` and `OtlpTemporality` outputs, as in the
+[one-stack deploy](README.md#ecs-fargate), and give Hud the `HudRoleArn` and `HudExternalId` outputs.
+
+## Separate stacks
+
+The collector stack creates an AMP workspace unless you pass one, and grants the collector only
+`aps:RemoteWrite` on it. Without OSIS parameters, only metrics are sent.
 
 `deploy/aws/ecs-fargate.yaml` runs the collector as a service in your existing ECS cluster and VPC, reachable at
 `http://hud-collector.hud.local:4318` (private DNS). Defaults: 1 vCPU, 4 GB, ARM64, 1 task.

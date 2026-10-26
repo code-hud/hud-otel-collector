@@ -44,10 +44,26 @@ aws cloudformation deploy --stack-name hud --template-file deploy/aws/unified-ec
 `OtlpTemporality` outputs. Metrics show up in the OpenSearch UI (`DashboardUrl` output) through its AMP data
 source (PromQL), and investigations in its logs.
 
-Already have an Observability Stack or AMP workspace? See [Deploying with existing resources](alternatives.md).
+### Already running the observability stack?
 
-`unified-ecs.yaml` is generated from `observability.yaml`, `ecs-fargate.yaml` and `hud-access.yaml`: edit
-those, then run `scripts/unify.py`.
+`deploy/aws/unified-ecs-existing-ui.yaml` leaves yours alone. It creates Hud's own collection, pipeline and AMP
+workspace next to yours, with no UI app, plus the collector and the Hud access role. Pass `ExistingUiAppId` to
+add Hud's data to your OpenSearch UI app (details in
+[alternatives](alternatives.md#next-to-your-observability-stack)):
+
+```sh
+aws cloudformation deploy --stack-name hud --template-file deploy/aws/unified-ecs-existing-ui.yaml \
+  --capabilities CAPABILITY_IAM --parameter-overrides \
+  ClusterName=<cluster> VpcId=<vpc> SubnetIds=<subnet-a>,<subnet-b> AllowedCidr=<vpc cidr> \
+  ExternalId=<external id from Hud> ExistingUiAppId=<your OpenSearch UI app id, optional>
+```
+
+[Launch in CloudFormation](https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/quickcreate?templateURL=https%3A%2F%2Fhud-cfn-test-736129612463.s3.amazonaws.com%2Ftest%2Funified-ecs-existing-ui.yaml&stackName=hud) (template: `deploy/aws/unified-ecs-existing-ui.yaml`)
+
+For separate stacks, or an AMP workspace you already have, see [Deploying with existing resources](alternatives.md).
+
+`observability.yaml`, `unified-ecs.yaml` and `unified-ecs-existing-ui.yaml` are generated from the templates in
+`deploy/aws/parts/`, `ecs-fargate.yaml` and `hud-access.yaml`: edit those, then run `scripts/unify.py`.
 
 ## EKS
 
@@ -73,8 +89,8 @@ aren't sent to OpenSearch yet. To give Hud access, deploy `deploy/aws/hud-access
 
 ## Hud access
 
-Hud reads your data from its own AWS account (`736129612463`) by assuming a role in yours. The one-stack deploy
-creates it; for other setups, deploy `deploy/aws/hud-access.yaml` on its own
+Hud reads your data from its own AWS account (`736129612463`) by assuming a role in yours. Both one-stack templates
+create it; for other setups, deploy `deploy/aws/hud-access.yaml` on its own
 ([alternatives](alternatives.md#hud-access-on-its-own)).
 
 The role trusts Hud's account (or only the role in `HudPrincipalArn`, if set), and only with the `ExternalId` Hud
