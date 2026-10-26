@@ -1,4 +1,4 @@
-# Deploying (customer AWS account)
+# Deploying
 
 Commands below run from the repository root.
 
