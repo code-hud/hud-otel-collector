@@ -44,7 +44,8 @@ sha256sum --ignore-missing -c checksums.txt
 
 ## Deploying
 
-See [deploy/README.md](deploy/README.md) for ECS Fargate and EKS deployment into a customer AWS account.
+See [deploy/README.md](deploy/README.md) for deploying into a customer AWS account: one stack on ECS Fargate,
+or EKS with Helm.
 
 ## Local development
 
