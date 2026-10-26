@@ -14,9 +14,8 @@ Investigations (Hud's error forensics) are sent as OTLP logs to the
 [Observability Stack](https://github.com/opensearch-project/observability-stack)'s OpenSearch Ingestion (OSIS)
 pipeline, so they land in its OpenSearch. Without OSIS parameters, only metrics are sent.
 
-> **Test links.** The "Launch in CloudFormation" links below use a private S3 bucket in account 736129612463
-> and open the console in `us-east-1` (change the region in the console if needed). They only work when signed in
-> to that account; other accounts get an access error until the public bucket exists.
+> **Test links.** The "Launch in CloudFormation" links below open the console in `us-east-1` with templates
+> from a temporary test bucket. They will move to the real public bucket later.
 
 ## ECS Fargate
 
