@@ -17,6 +17,15 @@ Parameters:
   ServiceMapWindow:
     Type: String
     Default: 30s
+  DataAccessPrincipals:
+    Type: String
+    Default: ''
+    Description: Optional. Comma-separated IAM role or user ARNs (no spaces) that may read the collection, e.g. the roles you sign in to the OpenSearch UI with. Empty means only the pipeline, the OpenSearch UI setup and Hud's role (where deployed) can use it.
+Conditions:
+  HasDataAccessPrincipals: !Not
+  - !Equals
+    - !Ref 'DataAccessPrincipals'
+    - ''
 Resources:
   EncryptionPolicy:
     Type: AWS::OpenSearchServerless::SecurityPolicy
@@ -72,7 +81,20 @@ Resources:
     Properties:
       Name: !Sub '${Name}-access'
       Type: data
-      Policy: !Sub '[{"Rules":[ {"ResourceType":"index","Resource":["index/${Name}/*"],"Permission":["aoss:CreateIndex","aoss:UpdateIndex","aoss:DescribeIndex","aoss:ReadDocument","aoss:WriteDocument"]}, {"ResourceType":"collection","Resource":["collection/${Name}"],"Permission":["aoss:CreateCollectionItems","aoss:DeleteCollectionItems","aoss:UpdateCollectionItems","aoss:DescribeCollectionItems"]}], "Principal":["${PipelineRole.Arn}","arn:${AWS::Partition}:iam::${AWS::AccountId}:root"]}]'
+      Policy: !Sub '[{"Rules":[ {"ResourceType":"index","Resource":["index/${Name}/*"],"Permission":["aoss:CreateIndex","aoss:UpdateIndex","aoss:DescribeIndex","aoss:ReadDocument","aoss:WriteDocument"]}, {"ResourceType":"collection","Resource":["collection/${Name}"],"Permission":["aoss:CreateCollectionItems","aoss:DeleteCollectionItems","aoss:UpdateCollectionItems","aoss:DescribeCollectionItems"]}], "Principal":["${PipelineRole.Arn}"]}]'
+  ReadersAccessPolicy:
+    Type: AWS::OpenSearchServerless::AccessPolicy
+    Condition: HasDataAccessPrincipals
+    Properties:
+      Name: !Sub '${Name}-read'
+      Type: data
+      Policy: !Sub
+      - '[{"Rules":[ {"ResourceType":"index","Resource":["index/${Name}/*"],"Permission":["aoss:DescribeIndex","aoss:ReadDocument"]}, {"ResourceType":"collection","Resource":["collection/${Name}"],"Permission":["aoss:DescribeCollectionItems"]}], "Principal":["${Principals}"]}]'
+      - Principals: !Join
+        - '","'
+        - !Split
+          - ','
+          - !Ref 'DataAccessPrincipals'
   Pipeline:
     Type: AWS::OSIS::Pipeline
     DependsOn: DataAccessPolicy
@@ -272,6 +294,12 @@ Resources:
           - Effect: Allow
             Action: iam:PassRole
             Resource: !GetAtt 'DirectQueryRole.Arn'
+  SetupAccessPolicy:
+    Type: AWS::OpenSearchServerless::AccessPolicy
+    Properties:
+      Name: !Sub '${Name}-setup'
+      Type: data
+      Policy: !Sub '[{"Rules":[ {"ResourceType":"index","Resource":["index/${Name}/*"],"Permission":["aoss:DescribeIndex","aoss:ReadDocument"]}, {"ResourceType":"collection","Resource":["collection/${Name}"],"Permission":["aoss:DescribeCollectionItems"]}], "Principal":["${SetupRole.Arn}"]}]'
   SetupFunction:
     Type: AWS::Lambda::Function
     Properties:
@@ -408,6 +436,7 @@ Resources:
                   cfnresponse.send(event, context, cfnresponse.FAILED, {}, "setup", reason=str(e)[:200])
   Setup:
     Type: AWS::CloudFormation::CustomResource
+    DependsOn: SetupAccessPolicy
     Properties:
       ServiceToken: !GetAtt 'SetupFunction.Arn'
       AppId: !GetAtt 'Application.Id'
@@ -440,8 +469,11 @@ Outputs:
     Description: Pass to the collector stack as OsisPipelineName.
     Value: !Ref 'Name'
   CollectionName:
-    Description: Pass to the access stack (hud-access.yaml) as CollectionName.
+    Description: Give this to Hud, with CollectionEndpoint. Pass to the access stack (hud-access.yaml) as CollectionName.
     Value: !Ref 'Name'
+  CollectionEndpoint:
+    Description: Give this to Hud, with CollectionName.
+    Value: !GetAtt 'Collection.CollectionEndpoint'
   OtlpEndpoint:
     Description: Base OTLP endpoint for other OTel collectors (append /v1/logs, /v1/traces or /v1/metrics; SigV4, service osis).
     Value: !Sub

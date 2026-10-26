@@ -19,6 +19,13 @@ Parameters:
   ServiceMapWindow:
     Type: String
     Default: 30s
+  DataAccessPrincipals:
+    Type: String
+    Default: ""
+    Description: Optional. Comma-separated IAM role or user ARNs (no spaces) that may read the collection, e.g. the roles you sign in to the OpenSearch UI with. Empty means only the pipeline, the OpenSearch UI setup and Hud's role (where deployed) can use it.
+
+Conditions:
+  HasDataAccessPrincipals: !Not [!Equals [!Ref DataAccessPrincipals, ""]]
 
 Resources:
   EncryptionPolicy:
@@ -72,7 +79,8 @@ Resources:
                 Action: aps:RemoteWrite
                 Resource: !GetAtt Workspace.Arn
 
-  # The account root principal lets IAM users and roles with aoss permissions (e.g. people using the UI) read the data.
+  # Only the pipeline writes. Data access policies have no deny, so no rule names the account root: that would let
+  # every role in the account with aoss:APIAccessAll write here, Hud's included.
   DataAccessPolicy:
     Type: AWS::OpenSearchServerless::AccessPolicy
     Properties:
@@ -82,7 +90,22 @@ Resources:
         [{"Rules":[
         {"ResourceType":"index","Resource":["index/${Name}/*"],"Permission":["aoss:CreateIndex","aoss:UpdateIndex","aoss:DescribeIndex","aoss:ReadDocument","aoss:WriteDocument"]},
         {"ResourceType":"collection","Resource":["collection/${Name}"],"Permission":["aoss:CreateCollectionItems","aoss:DeleteCollectionItems","aoss:UpdateCollectionItems","aoss:DescribeCollectionItems"]}],
-        "Principal":["${PipelineRole.Arn}","arn:${AWS::Partition}:iam::${AWS::AccountId}:root"]}]
+        "Principal":["${PipelineRole.Arn}"]}]
+
+  # Read-only, for the people and tools that use the data (e.g. in the OpenSearch UI).
+  ReadersAccessPolicy:
+    Type: AWS::OpenSearchServerless::AccessPolicy
+    Condition: HasDataAccessPrincipals
+    Properties:
+      Name: !Sub ${Name}-read
+      Type: data
+      Policy: !Sub
+        - >-
+          [{"Rules":[
+          {"ResourceType":"index","Resource":["index/${Name}/*"],"Permission":["aoss:DescribeIndex","aoss:ReadDocument"]},
+          {"ResourceType":"collection","Resource":["collection/${Name}"],"Permission":["aoss:DescribeCollectionItems"]}],
+          "Principal":["${Principals}"]}]
+        - Principals: !Join ['","', !Split [",", !Ref DataAccessPrincipals]]
 
   # Rendered from the official installer's serverless pipeline (aws/cli-installer/src/render.mjs, renderPipeline).
   Pipeline:
@@ -240,8 +263,11 @@ Outputs:
     Description: Pass to the collector stack as OsisPipelineName.
     Value: !Ref Name
   CollectionName:
-    Description: Pass to the access stack (hud-access.yaml) as CollectionName.
+    Description: Give this to Hud, with CollectionEndpoint. Pass to the access stack (hud-access.yaml) as CollectionName.
     Value: !Ref Name
+  CollectionEndpoint:
+    Description: Give this to Hud, with CollectionName.
+    Value: !GetAtt Collection.CollectionEndpoint
   OtlpEndpoint:
     Description: Base OTLP endpoint for other OTel collectors (append /v1/logs, /v1/traces or /v1/metrics; SigV4, service osis).
     Value: !Sub

@@ -27,7 +27,10 @@ Two modes:
   4 GB, ARM64, 1 task;
 - a read-only role Hud can assume to query that data (see [Hud access](#hud-access)).
 
-Subnets need outbound internet (NAT) to pull the image and reach AMP and OSIS. The task pulls the public
+Deploy the collector into public subnets (with a route to an internet gateway). The tasks get public IPs
+(`AssignPublicIp=ENABLED`, the default) to pull the image and reach AMP and OSIS, but the security group only
+opens port 4318 to `AllowedCidr` (your VPC CIDR; `0.0.0.0/0` is rejected), so nothing is reachable from the
+internet. For private subnets with a NAT gateway, see [alternatives](alternatives.md#private-subnets). The task pulls the public
 `ghcr.io/code-hud/hud-otel-collector` image; to use a copy in your account's ECR, pass `Image`. The AMP
 workspace is kept if the stack is deleted.
 
@@ -35,14 +38,15 @@ workspace is kept if the stack is deleted.
 aws cloudformation deploy --stack-name hud --template-file deploy/aws/unified-ecs.yaml \
   --capabilities CAPABILITY_IAM --parameter-overrides \
   ClusterName=<cluster> VpcId=<vpc> SubnetIds=<subnet-a>,<subnet-b> AllowedCidr=<vpc cidr> \
-  ExternalId=<external id from Hud>
+  ExternalId=<external id from Hud> DataAccessPrincipals=<role ARNs that read the data, optional>
 ```
 
 [Launch in CloudFormation](https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/quickcreate?templateURL=https%3A%2F%2Fhud-cfn-test-736129612463.s3.amazonaws.com%2Ftest%2Funified-ecs.yaml&stackName=hud) (template: `deploy/aws/unified-ecs.yaml`)
 
 **Your apps.** Set `HUD_OTLP_ENDPOINT` and `HUD_OTLP_TEMPORALITY` in your apps to the stack's `OtlpEndpoint` and
 `OtlpTemporality` outputs. Metrics show up in the OpenSearch UI (`DashboardUrl` output) through its AMP data
-source (PromQL), and investigations in its logs.
+source (PromQL), and investigations in its logs, for the roles in `DataAccessPrincipals` (see
+[Who can read the collection](#who-can-read-the-collection)).
 
 ### Already running the observability stack?
 
@@ -55,7 +59,8 @@ add Hud's data to your OpenSearch UI app (details in
 aws cloudformation deploy --stack-name hud --template-file deploy/aws/unified-ecs-existing-ui.yaml \
   --capabilities CAPABILITY_IAM --parameter-overrides \
   ClusterName=<cluster> VpcId=<vpc> SubnetIds=<subnet-a>,<subnet-b> AllowedCidr=<vpc cidr> \
-  ExternalId=<external id from Hud> ExistingUiAppId=<your OpenSearch UI app id, optional>
+  ExternalId=<external id from Hud> ExistingUiAppId=<your OpenSearch UI app id, optional> \
+  DataAccessPrincipals=<role ARNs that read the data, optional>
 ```
 
 [Launch in CloudFormation](https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/quickcreate?templateURL=https%3A%2F%2Fhud-cfn-test-736129612463.s3.amazonaws.com%2Ftest%2Funified-ecs-existing-ui.yaml&stackName=hud) (template: `deploy/aws/unified-ecs-existing-ui.yaml`)
@@ -97,10 +102,22 @@ The role trusts Hud's account (or only the role in `HudPrincipalArn`, if set), a
 gives you. It can only read:
 - AMP: `aps:QueryMetrics`, `aps:GetSeries`, `aps:GetLabels` and `aps:GetMetricMetadata` on the stack's AMP workspace.
 - OpenSearch Serverless: describe the collection and its indexes and read documents (investigations), through a
-  data access policy on the stack's collection, plus `aoss:BatchGetCollection` to find its endpoint.
+  data access policy on the stack's collection. Its IAM policy allows `aoss:APIAccessAll`, which OpenSearch
+  Serverless requires for any data call, only for that collection (`aoss:collection` condition).
 
-Give Hud the `HudRoleArn` and `HudExternalId` outputs. To revoke access, delete the stack (with the one-stack
-deploy this removes the collector and Observability Stack too), or delete the role in IAM.
+It can't write to AMP or to any collection. Give Hud the `HudRoleArn`, `HudExternalId`, `CollectionName` and
+`CollectionEndpoint` outputs. To revoke access, delete the stack (with the one-stack deploy this removes the
+collector and Observability Stack too), or delete the role in IAM.
 
-In the Observability Stack, the collection's own data access policy also grants your account root, so any role
-in your account with `aoss:APIAccessAll`, including Hud's, can also write and delete documents there.
+### Who can read the collection
+
+The collection's data access policies name each principal; none grants your account root, so having
+`aoss:APIAccessAll` in IAM isn't enough. They allow:
+- the OSIS pipeline role: write (the only writer);
+- the OpenSearch UI setup Lambda (one-stack deploy only) and Hud's role: read;
+- the IAM roles or users in `DataAccessPrincipals` (comma-separated ARNs, no spaces): read. Empty by default, so
+  add the roles you sign in to the OpenSearch UI with; they also need `aoss:APIAccessAll` and
+  `aoss:DashboardsAccessAll` in IAM. For more access, add your own data access policy next to these.
+
+Deployed an earlier version? Its policy granted your account root. Updating the stack removes that grant, so the
+OpenSearch UI shows no data for anyone not in `DataAccessPrincipals`; pass your roles' ARNs in the same update.

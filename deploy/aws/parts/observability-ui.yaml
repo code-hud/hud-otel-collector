@@ -75,6 +75,18 @@ Resources:
                 Action: iam:PassRole
                 Resource: !GetAtt DirectQueryRole.Arn
 
+  # Read-only on the collection for the setup Lambda, which creates index patterns through the UI.
+  SetupAccessPolicy:
+    Type: AWS::OpenSearchServerless::AccessPolicy
+    Properties:
+      Name: !Sub ${Name}-setup
+      Type: data
+      Policy: !Sub >-
+        [{"Rules":[
+        {"ResourceType":"index","Resource":["index/${Name}/*"],"Permission":["aoss:DescribeIndex","aoss:ReadDocument"]},
+        {"ResourceType":"collection","Resource":["collection/${Name}"],"Permission":["aoss:DescribeCollectionItems"]}],
+        "Principal":["${SetupRole.Arn}"]}]
+
   # Attaches AMP to the UI app, then creates the Observability workspace, index patterns and correlations
   # (the official ui-init without its demo dashboards and saved queries).
   SetupFunction:
@@ -214,6 +226,7 @@ Resources:
 
   Setup:
     Type: AWS::CloudFormation::CustomResource
+    DependsOn: SetupAccessPolicy
     Properties:
       ServiceToken: !GetAtt SetupFunction.Arn
       AppId: !GetAtt Application.Id

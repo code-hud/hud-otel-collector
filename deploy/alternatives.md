@@ -22,7 +22,8 @@ Your collection, pipeline, workspace and UI app aren't changed, except as below.
 aws cloudformation deploy --stack-name hud --template-file deploy/aws/unified-ecs-existing-ui.yaml \
   --capabilities CAPABILITY_IAM --parameter-overrides \
   ClusterName=<cluster> VpcId=<vpc> SubnetIds=<subnet-a>,<subnet-b> AllowedCidr=<vpc cidr> \
-  ExternalId=<external id from Hud> ExistingUiAppId=<your OpenSearch UI app id, optional>
+  ExternalId=<external id from Hud> ExistingUiAppId=<your OpenSearch UI app id, optional> \
+  DataAccessPrincipals=<role ARNs that read the data, optional>
 ```
 
 [Launch in CloudFormation](https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/quickcreate?templateURL=https%3A%2F%2Fhud-cfn-test-736129612463.s3.amazonaws.com%2Ftest%2Funified-ecs-existing-ui.yaml&stackName=hud) (template: `deploy/aws/unified-ecs-existing-ui.yaml`)
@@ -31,10 +32,12 @@ aws cloudformation deploy --stack-name hud --template-file deploy/aws/unified-ec
 to add Hud's collection and AMP workspace (as a PromQL data source) to it. The stack reads your app's data sources
 and adds its two; it never removes yours. Deleting the stack, or changing `ExistingUiAppId`, removes only those
 two. No workspace is created in your app: to use Hud's data in one of your workspaces, associate the two data
-sources with it in the workspace's settings.
+sources with it in the workspace's settings, and add the roles you sign in with to `DataAccessPrincipals`
+([Who can read the collection](README.md#who-can-read-the-collection)).
 
 Then point your apps at the stack's `OtlpEndpoint` and `OtlpTemporality` outputs, as in the
-[one-stack deploy](README.md#ecs-fargate), and give Hud the `HudRoleArn` and `HudExternalId` outputs.
+[one-stack deploy](README.md#ecs-fargate), and give Hud the `HudRoleArn`, `HudExternalId`, `CollectionName` and
+`CollectionEndpoint` outputs.
 
 ## Separate stacks
 
@@ -63,7 +66,8 @@ With an existing stack (from the installer or built some other way), use its AMP
 OTLP logs URL of its OSIS pipeline (the pipeline must accept OTLP logs). The installer names both after the
 pipeline: `aws amp list-workspaces --alias <pipeline>` and `https://<IngestEndpointUrls[0]>/<pipeline>/v1/logs`.
 
-**2. Collector.** Subnets need outbound internet (NAT) to pull the image and reach AMP and OSIS. The task
+**2. Collector.** Deploy into public subnets, as in the [one-stack deploy](README.md#ecs-fargate), or see
+[Private subnets](#private-subnets). The task
 pulls the public `ghcr.io/code-hud/hud-otel-collector` image; to use a copy in your account's ECR, pass `Image`.
 
 ```sh
@@ -79,11 +83,18 @@ aws cloudformation deploy --stack-name hud-collector --template-file deploy/aws/
 `OtlpTemporality` outputs. Metrics show up in the OpenSearch UI through its AMP data source (PromQL), and
 investigations in its logs.
 
+## Private subnets
+
+All ECS templates assume public subnets (with a route to an internet gateway) and give the tasks public IPs. For
+private subnets with a NAT gateway, pass `AssignPublicIp=DISABLED`; the tasks then reach GHCR, AMP and OSIS through
+the NAT gateway. Without a NAT gateway they can't pull the image from GHCR or reach OSIS's public endpoint.
+
 ## Hud access on its own
 
 `deploy/aws/hud-access.yaml` creates only the read-only role described in [Hud access](README.md#hud-access),
 for an AMP workspace and, optionally, an OpenSearch Serverless collection you already have (empty
-`CollectionName` shares metrics only). Use the collector stack's `AmpWorkspaceId` output, or the Observability
+`CollectionName` shares metrics only). `CollectionName` also limits the role's `aoss:APIAccessAll` to that
+collection. Use the collector stack's `AmpWorkspaceId` output, or the Observability
 Stack's `AmpWorkspaceId` and `CollectionName` outputs:
 
 ```sh
