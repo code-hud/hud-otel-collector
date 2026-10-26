@@ -1,0 +1,228 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  UI part of the Observability Stack (source for scripts/unify.py): an OpenSearch UI application with an
+  Observability workspace, and AMP as a PromQL data source.
+
+Parameters:
+  Name:
+    Type: String
+    Default: hud-obs
+    AllowedPattern: ^[a-z][a-z0-9-]{2,24}$
+    Description: Names the collection, pipeline, AMP workspace and UI application (3-25 lowercase characters, so the 32-character OpenSearch policy names fit).
+  CollectionArn:
+    Type: String
+  AmpWorkspaceArn:
+    Type: String
+  AmpWorkspaceId:
+    Type: String
+
+Resources:
+  # Lets the UI query AMP with PromQL (also manages AMP alert rules and silences, hence aps:* on rule groups).
+  DirectQueryRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: directquery.opensearchservice.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: amp
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: aps:*
+                Resource:
+                  - !Ref AmpWorkspaceArn
+                  - !Sub arn:${AWS::Partition}:aps:${AWS::Region}:${AWS::AccountId}:rulegroupsnamespace/${AmpWorkspaceId}/*
+
+  # Created with the collection only: attaching the AMP data source at creation fails the app, so Setup adds it.
+  Application:
+    Type: AWS::OpenSearchService::Application
+    Properties:
+      Name: !Ref Name
+      DataSources:
+        - DataSourceArn: !Ref CollectionArn
+      AppConfigs:
+        - Key: opensearchDashboards.dashboardAdmin.users
+          Value: '["*"]'
+        - Key: opensearchDashboards.dashboardAdmin.groups
+          Value: '["*"]'
+
+  SetupRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: setup
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # ponytail: same broad actions as the official stack's setup Lambdas; scope to the app and data source ARNs once verified in a real deploy.
+              - Effect: Allow
+                Action: [es:*, opensearch:*, aoss:BatchGetCollection, aoss:APIAccessAll]
+                Resource: "*"
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt DirectQueryRole.Arn
+
+  # Attaches AMP to the UI app, then creates the Observability workspace, index patterns and correlations
+  # (the official ui-init without its demo dashboards and saved queries).
+  SetupFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.13
+      Handler: index.handler
+      Timeout: 900
+      Role: !GetAtt SetupRole.Arn
+      Code:
+        ZipFile: |
+          import json, time, urllib.error, urllib.parse, urllib.request
+          import boto3, botocore.session, cfnresponse
+          from botocore.auth import SigV4Auth
+          from botocore.awsrequest import AWSRequest
+
+          WORKSPACE = "Observability Stack"
+
+          def ui(base, method, path, body=None):
+              data = json.dumps(body).encode() if body is not None else None
+              req = AWSRequest(method=method, url=base + path, data=data,
+                               headers={"Content-Type": "application/json", "osd-xsrf": "osd-fetch"})
+              SigV4Auth(botocore.session.Session().get_credentials(), "opensearch", boto3.session.Session().region_name).add_auth(req)
+              r = urllib.request.Request(base + path, data=data, method=method, headers=dict(req.headers))
+              try:
+                  with urllib.request.urlopen(r, timeout=30) as resp:
+                      return resp.status, json.loads(resp.read() or b"null")
+              except urllib.error.HTTPError as e:
+                  return e.code, e.read().decode()[:500]
+
+          def find(base, path, key, tries=6):
+              for _ in range(tries):
+                  _, d = ui(base, "GET", path)
+                  if isinstance(d, dict) and d.get(key):
+                      return d[key]
+                  time.sleep(10)
+              return []
+
+          def setup(p):
+              os_ = boto3.client("opensearch")
+              name = p["DataSourceName"]
+              try:
+                  os_.add_direct_query_data_source(DataSourceName=name, Description="AMP for the Observability Stack",
+                      DataSourceType={"Prometheus": {"RoleArn": p["DirectQueryRoleArn"], "WorkspaceArn": p["WorkspaceArn"]}})
+              except os_.exceptions.ResourceAlreadyExistsException:
+                  pass
+              dqs = os_.get_direct_query_data_source(DataSourceName=name)["DataSourceArn"]
+
+              for _ in range(60):
+                  app = os_.get_application(id=p["AppId"])
+                  if app.get("endpoint"):
+                      break
+                  if app.get("status") == "FAILED":
+                      raise RuntimeError("application FAILED")
+                  time.sleep(10)
+              else:
+                  raise RuntimeError("timed out waiting for the application endpoint")
+              os_.update_application(id=p["AppId"], dataSources=[{"dataSourceArn": p["CollectionArn"]}, {"dataSourceArn": dqs}])
+              base = app["endpoint"] if app["endpoint"].startswith("https://") else "https://" + app["endpoint"]
+
+              for _ in range(24):
+                  if ui(base, "GET", "/api/status")[0] == 200:
+                      break
+                  time.sleep(5)
+              ds = find(base, "/api/saved_objects/_find?type=data-source&per_page=10", "saved_objects")
+              dc = find(base, "/api/saved_objects/_find?type=data-connection&per_page=10", "saved_objects")
+
+              _, wl = ui(base, "POST", "/api/workspaces/_list", {})
+              ws = next((w["id"] for w in (wl or {}).get("result", {}).get("workspaces", []) if w["name"] == WORKSPACE), None)
+              if not ws:
+                  _, r = ui(base, "POST", "/api/workspaces", {"attributes": {"name": WORKSPACE,
+                      "description": "Logs, traces and metrics", "features": ["use-case-observability"]}})
+                  ws = (r or {}).get("result", {}).get("id") if isinstance(r, dict) else None
+                  if not ws:
+                      raise RuntimeError("workspace creation failed: %s" % r)
+              for kind, objs in (("data-source", ds), ("data-connection", dc)):
+                  if objs:
+                      ui(base, "POST", "/api/workspaces/_associate", {"workspaceId": ws, "savedObjects": [{"type": kind, "id": objs[0]["id"]}]})
+
+              logs_schema = '{"otelLogs":{"timestamp":"time","traceId":"traceId","spanId":"spanId","serviceName":"resource.attributes.service.name"}}'
+              patterns = [{"title": "logs-otel-v1*", "timeFieldName": "time", "signalType": "logs", "schemaMappings": logs_schema},
+                          {"title": "otel-v1-apm-span*", "timeFieldName": "endTime", "signalType": "traces"},
+                          {"title": "otel-v2-apm-service-map*", "timeFieldName": "timestamp"}]
+              ids = {}
+              for pat in patterns:
+                  _, f = ui(base, "GET", "/w/%s/api/saved_objects/_find?type=index-pattern&search_fields=title&search=%s" % (ws, urllib.parse.quote(pat["title"])))
+                  hit = next((o["id"] for o in (f or {}).get("saved_objects", []) if o["attributes"].get("title") == pat["title"]), None) if isinstance(f, dict) else None
+                  if not hit:
+                      _, r = ui(base, "POST", "/w/%s/api/saved_objects/index-pattern" % ws, {"attributes": pat,
+                          "references": [{"id": ds[0]["id"], "name": "dataSource", "type": "data-source"}] if ds else []})
+                      hit = r.get("id") if isinstance(r, dict) else None
+                  ids[pat["title"]] = hit
+              logs, spans, svcmap = ids["logs-otel-v1*"], ids["otel-v1-apm-span*"], ids["otel-v2-apm-service-map*"]
+              ui(base, "POST", "/w/%s/api/opensearch-dashboards/settings" % ws, {"changes": {"defaultIndex": logs}})
+
+              _, c = ui(base, "GET", "/w/%s/api/saved_objects/_find?type=correlations&per_page=50" % ws)
+              have = [o["attributes"].get("correlationType", "") for o in (c or {}).get("saved_objects", [])] if isinstance(c, dict) else []
+              if spans and logs and not any(t.startswith("trace-to-logs") for t in have):
+                  ui(base, "POST", "/w/%s/api/saved_objects/correlations" % ws, {"attributes": {
+                      "correlationType": "trace-to-logs-otel-v1-apm-span*", "title": "trace-to-logs_otel-v1-apm-span*", "version": "1.0.0",
+                      "entities": [{"tracesDataset": {"id": "references[0].id"}}, {"logsDataset": {"id": "references[1].id"}}]},
+                      "references": [{"name": "entities[0].index", "type": "index-pattern", "id": spans},
+                                     {"name": "entities[1].index", "type": "index-pattern", "id": logs}]})
+              if spans and svcmap and dc and not any(t.startswith("APM-Config") for t in have):
+                  ui(base, "POST", "/w/%s/api/saved_objects/correlations" % ws, {"attributes": {
+                      "correlationType": "APM-Config-" + ws, "title": "apm-config", "version": "1.0.0",
+                      "entities": [{"tracesDataset": {"id": "references[0].id"}}, {"serviceMapDataset": {"id": "references[1].id"}},
+                                   {"prometheusDataSource": {"id": "references[2].id"}}]},
+                      "references": [{"name": "entities[0].index", "type": "index-pattern", "id": spans},
+                                     {"name": "entities[1].index", "type": "index-pattern", "id": svcmap},
+                                     {"name": "entities[2].dataConnection", "type": "data-connection", "id": dc[0]["id"]}]})
+              ui(base, "POST", "/api/opensearch-dashboards/settings", {"changes": {"defaultWorkspace": ws}})
+              return {"WorkspaceId": ws, "DataSourceArn": dqs, "Endpoint": base}
+
+          def teardown(p):
+              os_ = boto3.client("opensearch")
+              try:
+                  os_.update_application(id=p["AppId"], dataSources=[{"dataSourceArn": p["CollectionArn"]}])
+              except Exception as e:
+                  print("detach:", e)
+              try:
+                  os_.delete_direct_query_data_source(DataSourceName=p["DataSourceName"])
+              except Exception as e:
+                  print("delete data source:", e)
+
+          def handler(event, context):
+              p = event["ResourceProperties"]
+              try:
+                  if event["RequestType"] == "Delete":
+                      teardown(p)
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, "setup")
+                  else:
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, setup(p), "setup")
+              except Exception as e:
+                  print("failed:", repr(e))
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {}, "setup", reason=str(e)[:200])
+
+  Setup:
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      ServiceToken: !GetAtt SetupFunction.Arn
+      AppId: !GetAtt Application.Id
+      CollectionArn: !Ref CollectionArn
+      WorkspaceArn: !Ref AmpWorkspaceArn
+      DirectQueryRoleArn: !GetAtt DirectQueryRole.Arn
+      DataSourceName: !Join ["_", [!Join ["_", !Split ["-", !Ref Name]], prometheus]]
+
+Outputs:
+  DashboardUrl:
+    Description: OpenSearch UI, Observability workspace.
+    Value: !Sub ${Setup.Endpoint}/w/${Setup.WorkspaceId}/app/home

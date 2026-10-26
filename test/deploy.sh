@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Lints the CloudFormation templates, checks unified-ecs.yaml matches scripts/unify.py, checks the Observability Stack
+# Lints the CloudFormation templates, checks the generated ones match scripts/unify.py, checks the Observability Stack
 # pipeline and setup code, and validates every collector config they and the Helm values render (both modes) against
 # the built image.
 set -euo pipefail
@@ -12,12 +12,12 @@ trap 'rm -rf "$OUT"' EXIT
 
 echo "--- cfn-lint"
 docker run --rm -v "$ROOT/deploy:/d:ro" python:3.13-slim sh -c \
-  'pip install -q cfn-lint 2>/dev/null && cfn-lint /d/aws/*.yaml'
+  'pip install -q cfn-lint 2>/dev/null && cfn-lint /d/aws/*.yaml /d/aws/parts/*.yaml'
 
-echo "--- unified-ecs.yaml is up to date"
+echo "--- generated templates are up to date"
 docker run --rm -v "$ROOT:/r:ro" python:3.13-slim sh -c 'pip install -q pyyaml 2>/dev/null && python /r/scripts/unify.py --check'
 
-echo "--- observability.yaml pipeline body and setup code"
+echo "--- observability.yaml pipeline body, setup and attach code"
 docker run --rm -v "$ROOT/deploy:/d:ro" python:3.13-slim sh -c 'pip install -q pyyaml 2>/dev/null && python - <<EOF
 import yaml
 yaml.SafeLoader.add_multi_constructor("!", lambda l, s, n: l.construct_sequence(n) if isinstance(n, yaml.SequenceNode) else l.construct_scalar(n) if isinstance(n, yaml.ScalarNode) else l.construct_mapping(n))
@@ -25,6 +25,30 @@ r = yaml.safe_load(open("/d/aws/observability.yaml"))["Resources"]
 body = yaml.safe_load(r["Pipeline"]["Properties"]["PipelineConfigurationBody"])
 assert {"otlp-pipeline", "otel-logs-pipeline", "service-map-pipeline", "otel-metrics-pipeline"} <= body.keys(), body.keys()
 compile(r["SetupFunction"]["Properties"]["Code"]["ZipFile"], "index.py", "exec")
+r = yaml.safe_load(open("/d/aws/parts/observability-attach.yaml"))["Resources"]
+import sys, types
+class Fake:
+    class exceptions:
+        ResourceNotFoundException = ResourceAlreadyExistsException = type("E", (Exception,), {})
+    ds = [{"dataSourceArn": "theirs", "iamRoleForDataSourceArn": "role"}]
+    dqs = None
+    def add_direct_query_data_source(self, DataSourceName, **_): Fake.dqs = "dqs:" + DataSourceName
+    def get_direct_query_data_source(self, DataSourceName):
+        if not Fake.dqs: raise Fake.exceptions.ResourceNotFoundException()
+        return {"DataSourceArn": Fake.dqs}
+    def delete_direct_query_data_source(self, DataSourceName): Fake.dqs = None
+    def get_application(self, id): return {"dataSources": [dict(d) for d in Fake.ds]}
+    def update_application(self, id, dataSources): Fake.ds = dataSources
+sys.modules["boto3"] = types.SimpleNamespace(client=lambda _: Fake())
+sys.modules["cfnresponse"] = types.SimpleNamespace(SUCCESS="S", FAILED="F", send=lambda *a, **k: print(a[2], k))
+ns = {}
+exec(r["AttachFunction"]["Properties"]["Code"]["ZipFile"], ns)
+p = {"AppId": "app1", "CollectionArn": "coll", "WorkspaceArn": "ws", "DirectQueryRoleArn": "r", "DataSourceName": "hud_x_hud_prometheus"}
+for _ in range(2): ns["handler"]({"RequestType": "Create", "ResourceProperties": p}, None)
+assert [d["dataSourceArn"] for d in Fake.ds] == ["theirs", "coll", "dqs:hud_x_hud_prometheus_app1"], Fake.ds
+assert Fake.ds[0] == {"dataSourceArn": "theirs", "iamRoleForDataSourceArn": "role"}, Fake.ds
+ns["handler"]({"RequestType": "Delete", "ResourceProperties": p}, None)
+assert Fake.ds == [{"dataSourceArn": "theirs", "iamRoleForDataSourceArn": "role"}] and Fake.dqs is None, Fake.ds
 print("ok")
 EOF'
 
