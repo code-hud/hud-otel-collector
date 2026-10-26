@@ -11,6 +11,7 @@ Metadata:
       - MinUnits
       - MaxUnits
       - ServiceMapWindow
+      - DataWritePrincipals
     - Label:
         default: Where to run
       Parameters:
@@ -55,6 +56,10 @@ Parameters:
   ServiceMapWindow:
     Type: String
     Default: 30s
+  DataWritePrincipals:
+    Type: String
+    Default: ''
+    Description: Optional. Comma-separated IAM role or user ARNs (no spaces) that may also write to the collection (create and update indexes and documents). Everyone in your account can already read it; empty means only the pipeline writes.
   ClusterName:
     Type: String
     Description: Your existing ECS cluster to run the collector in.
@@ -62,16 +67,17 @@ Parameters:
     Type: AWS::EC2::VPC::Id
   SubnetIds:
     Type: List<AWS::EC2::Subnet::Id>
-    Description: Subnets for the collector tasks. They need outbound internet (NAT or public IP) to pull the image and reach AMP.
+    Description: Public subnets (with a route to an internet gateway) for the collector tasks, so they can pull the image and reach AMP and OpenSearch Ingestion. For private subnets with a NAT gateway, set AssignPublicIp to DISABLED.
   AssignPublicIp:
     Type: String
-    Default: DISABLED
+    Default: ENABLED
     AllowedValues:
-    - DISABLED
     - ENABLED
+    - DISABLED
+    Description: ENABLED for public subnets. DISABLED only for private subnets with a NAT gateway.
   AllowedCidr:
     Type: String
-    Description: CIDR of your apps that send metrics (usually your VPC CIDR). Opens port 4318 to it.
+    Description: Private CIDR of your apps that send metrics (usually your VPC CIDR). Opens only port 4318, only to it; 0.0.0.0/0 is rejected.
     AllowedPattern: ^\d{1,3}(\.\d{1,3}){3}/\d{1,2}$
   Mode:
     Type: String
@@ -129,7 +135,19 @@ Parameters:
     MaxLength: 1224
     AllowedPattern: ^[\w+=,.@:/-]+$
     Description: The external id Hud gave you. Hud must send it when assuming the role.
+Rules:
+  AllowedCidrNotPublic:
+    Assertions:
+    - Assert: !Not
+      - !Equals
+        - !Ref 'AllowedCidr'
+        - 0.0.0.0/0
+      AssertDescription: AllowedCidr must not be 0.0.0.0/0. The tasks have public IPs, so that would open the collector to the internet.
 Conditions:
+  HasDataWritePrincipals: !Not
+  - !Equals
+    - !Ref 'DataWritePrincipals'
+    - ''
   Merge: !Equals
   - !Ref 'Mode'
   - merge
@@ -192,7 +210,20 @@ Resources:
     Properties:
       Name: !Sub '${Name}-access'
       Type: data
-      Policy: !Sub '[{"Rules":[ {"ResourceType":"index","Resource":["index/${Name}/*"],"Permission":["aoss:CreateIndex","aoss:UpdateIndex","aoss:DescribeIndex","aoss:ReadDocument","aoss:WriteDocument"]}, {"ResourceType":"collection","Resource":["collection/${Name}"],"Permission":["aoss:CreateCollectionItems","aoss:DeleteCollectionItems","aoss:UpdateCollectionItems","aoss:DescribeCollectionItems"]}], "Principal":["${PipelineRole.Arn}","arn:${AWS::Partition}:iam::${AWS::AccountId}:root"]}]'
+      Policy: !Sub '[{"Rules":[ {"ResourceType":"index","Resource":["index/${Name}/*"],"Permission":["aoss:CreateIndex","aoss:UpdateIndex","aoss:DescribeIndex","aoss:ReadDocument","aoss:WriteDocument"]}, {"ResourceType":"collection","Resource":["collection/${Name}"],"Permission":["aoss:CreateCollectionItems","aoss:DeleteCollectionItems","aoss:UpdateCollectionItems","aoss:DescribeCollectionItems"]}], "Principal":["${PipelineRole.Arn}"]}, {"Rules":[ {"ResourceType":"index","Resource":["index/${Name}/*"],"Permission":["aoss:DescribeIndex","aoss:ReadDocument"]}, {"ResourceType":"collection","Resource":["collection/${Name}"],"Permission":["aoss:DescribeCollectionItems"]}], "Principal":["arn:${AWS::Partition}:iam::${AWS::AccountId}:root"]}]'
+  WritersAccessPolicy:
+    Type: AWS::OpenSearchServerless::AccessPolicy
+    Condition: HasDataWritePrincipals
+    Properties:
+      Name: !Sub '${Name}-write'
+      Type: data
+      Policy: !Sub
+      - '[{"Rules":[ {"ResourceType":"index","Resource":["index/${Name}/*"],"Permission":["aoss:CreateIndex","aoss:UpdateIndex","aoss:DescribeIndex","aoss:ReadDocument","aoss:WriteDocument"]}, {"ResourceType":"collection","Resource":["collection/${Name}"],"Permission":["aoss:CreateCollectionItems","aoss:DeleteCollectionItems","aoss:UpdateCollectionItems","aoss:DescribeCollectionItems"]}], "Principal":["${Principals}"]}]'
+      - Principals: !Join
+        - '","'
+        - !Split
+          - ','
+          - !Ref 'DataWritePrincipals'
   Pipeline:
     Type: AWS::OSIS::Pipeline
     DependsOn: DataAccessPolicy
@@ -549,9 +580,9 @@ Resources:
           - Effect: Allow
             Action: aoss:APIAccessAll
             Resource: !Sub 'arn:${AWS::Partition}:aoss:${AWS::Region}:${AWS::AccountId}:collection/*'
-          - Effect: Allow
-            Action: aoss:BatchGetCollection
-            Resource: '*'
+            Condition:
+              StringEquals:
+                aoss:collection: !Ref 'Name'
   HudDataAccessPolicy:
     Type: AWS::OpenSearchServerless::AccessPolicy
     Properties:
@@ -795,6 +826,12 @@ Outputs:
   DashboardUrl:
     Description: OpenSearch UI, Observability workspace.
     Value: !Sub '${Setup.Endpoint}/w/${Setup.WorkspaceId}/app/home'
+  CollectionName:
+    Description: Give this to Hud, with CollectionEndpoint. Pass to the access stack (hud-access.yaml) as CollectionName.
+    Value: !Ref 'Name'
+  CollectionEndpoint:
+    Description: Give this to Hud, with CollectionName.
+    Value: !GetAtt 'Collection.CollectionEndpoint'
   ObservabilityOtlpEndpoint:
     Description: Base OTLP endpoint for other OTel collectors (append /v1/logs, /v1/traces or /v1/metrics; SigV4, service osis).
     Value: !Sub

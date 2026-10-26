@@ -17,6 +17,15 @@ Parameters:
   ServiceMapWindow:
     Type: String
     Default: 30s
+  DataWritePrincipals:
+    Type: String
+    Default: ''
+    Description: Optional. Comma-separated IAM role or user ARNs (no spaces) that may also write to the collection (create and update indexes and documents). Everyone in your account can already read it; empty means only the pipeline writes.
+Conditions:
+  HasDataWritePrincipals: !Not
+  - !Equals
+    - !Ref 'DataWritePrincipals'
+    - ''
 Resources:
   EncryptionPolicy:
     Type: AWS::OpenSearchServerless::SecurityPolicy
@@ -72,7 +81,20 @@ Resources:
     Properties:
       Name: !Sub '${Name}-access'
       Type: data
-      Policy: !Sub '[{"Rules":[ {"ResourceType":"index","Resource":["index/${Name}/*"],"Permission":["aoss:CreateIndex","aoss:UpdateIndex","aoss:DescribeIndex","aoss:ReadDocument","aoss:WriteDocument"]}, {"ResourceType":"collection","Resource":["collection/${Name}"],"Permission":["aoss:CreateCollectionItems","aoss:DeleteCollectionItems","aoss:UpdateCollectionItems","aoss:DescribeCollectionItems"]}], "Principal":["${PipelineRole.Arn}","arn:${AWS::Partition}:iam::${AWS::AccountId}:root"]}]'
+      Policy: !Sub '[{"Rules":[ {"ResourceType":"index","Resource":["index/${Name}/*"],"Permission":["aoss:CreateIndex","aoss:UpdateIndex","aoss:DescribeIndex","aoss:ReadDocument","aoss:WriteDocument"]}, {"ResourceType":"collection","Resource":["collection/${Name}"],"Permission":["aoss:CreateCollectionItems","aoss:DeleteCollectionItems","aoss:UpdateCollectionItems","aoss:DescribeCollectionItems"]}], "Principal":["${PipelineRole.Arn}"]}, {"Rules":[ {"ResourceType":"index","Resource":["index/${Name}/*"],"Permission":["aoss:DescribeIndex","aoss:ReadDocument"]}, {"ResourceType":"collection","Resource":["collection/${Name}"],"Permission":["aoss:DescribeCollectionItems"]}], "Principal":["arn:${AWS::Partition}:iam::${AWS::AccountId}:root"]}]'
+  WritersAccessPolicy:
+    Type: AWS::OpenSearchServerless::AccessPolicy
+    Condition: HasDataWritePrincipals
+    Properties:
+      Name: !Sub '${Name}-write'
+      Type: data
+      Policy: !Sub
+      - '[{"Rules":[ {"ResourceType":"index","Resource":["index/${Name}/*"],"Permission":["aoss:CreateIndex","aoss:UpdateIndex","aoss:DescribeIndex","aoss:ReadDocument","aoss:WriteDocument"]}, {"ResourceType":"collection","Resource":["collection/${Name}"],"Permission":["aoss:CreateCollectionItems","aoss:DeleteCollectionItems","aoss:UpdateCollectionItems","aoss:DescribeCollectionItems"]}], "Principal":["${Principals}"]}]'
+      - Principals: !Join
+        - '","'
+        - !Split
+          - ','
+          - !Ref 'DataWritePrincipals'
   Pipeline:
     Type: AWS::OSIS::Pipeline
     DependsOn: DataAccessPolicy
@@ -440,8 +462,11 @@ Outputs:
     Description: Pass to the collector stack as OsisPipelineName.
     Value: !Ref 'Name'
   CollectionName:
-    Description: Pass to the access stack (hud-access.yaml) as CollectionName.
+    Description: Give this to Hud, with CollectionEndpoint. Pass to the access stack (hud-access.yaml) as CollectionName.
     Value: !Ref 'Name'
+  CollectionEndpoint:
+    Description: Give this to Hud, with CollectionName.
+    Value: !GetAtt 'Collection.CollectionEndpoint'
   OtlpEndpoint:
     Description: Base OTLP endpoint for other OTel collectors (append /v1/logs, /v1/traces or /v1/metrics; SigV4, service osis).
     Value: !Sub

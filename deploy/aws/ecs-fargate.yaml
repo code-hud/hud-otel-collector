@@ -21,14 +21,15 @@ Parameters:
     Type: AWS::EC2::VPC::Id
   SubnetIds:
     Type: List<AWS::EC2::Subnet::Id>
-    Description: Subnets for the collector tasks. They need outbound internet (NAT or public IP) to pull the image and reach AMP.
+    Description: Public subnets (with a route to an internet gateway) for the collector tasks, so they can pull the image and reach AMP and OpenSearch Ingestion. For private subnets with a NAT gateway, set AssignPublicIp to DISABLED.
   AssignPublicIp:
     Type: String
-    Default: DISABLED
-    AllowedValues: [DISABLED, ENABLED]
+    Default: ENABLED
+    AllowedValues: [ENABLED, DISABLED]
+    Description: ENABLED for public subnets. DISABLED only for private subnets with a NAT gateway.
   AllowedCidr:
     Type: String
-    Description: CIDR of your apps that send metrics (usually your VPC CIDR). Opens port 4318 to it.
+    Description: Private CIDR of your apps that send metrics (usually your VPC CIDR). Opens only port 4318, only to it; 0.0.0.0/0 is rejected.
     AllowedPattern: ^\d{1,3}(\.\d{1,3}){3}/\d{1,2}$
   Mode:
     Type: String
@@ -77,6 +78,10 @@ Parameters:
     Description: Private DNS namespace created in your VPC. Your apps send to hud-collector.<namespace>:4318.
 
 Rules:
+  AllowedCidrNotPublic:
+    Assertions:
+      - Assert: !Not [!Equals [!Ref AllowedCidr, 0.0.0.0/0]]
+        AssertDescription: AllowedCidr must not be 0.0.0.0/0. The tasks have public IPs, so that would open the collector to the internet.
   OsisNeedsPipelineName:
     RuleCondition: !Not [!Equals [!Ref OsisLogsUrl, ""]]
     Assertions:

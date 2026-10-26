@@ -175,11 +175,11 @@ def build(consumers, description, unique_name=False):
     included = {TAGS[n] for n in consumers}
     bound, internal = {}, set()
     for k, o in data["Outputs"].items():
-        m = re.match(r"Pass to the (.+?) stacks? (?:\(.*?\) )?as (\w+)\.", o.get("Description", ""))
+        m = re.search(r"Pass to the (.+?) stacks? (?:\(.*?\) )?as (\w+)\.", o.get("Description", ""))
         if m:
             if m.group(2) in used_by["Parameters"]:
                 bound[m.group(2)] = o["Value"]
-            if set(re.split(r", | and ", m.group(1))) <= included | INTERNAL:
+            if set(re.split(r", | and ", m.group(1))) <= included | INTERNAL and "Give this to Hud" not in o["Description"]:
                 internal.add(k)
 
     # A bound parameter is never empty, so: Equals[Ref p, ""] is false.
@@ -217,7 +217,7 @@ def build(consumers, description, unique_name=False):
         "Metadata": {"AWS::CloudFormation::Interface": {"ParameterGroups": groups}} if used_by["Groups"] else {},
         "Parameters": params,
         "Rules": {k: v for k, v in used_by.get("Rules", {}).items() if not refs(v) & set(bound)},
-        "Conditions": {k: v for k, v in used_by["Conditions"].items() if k not in fixed},
+        "Conditions": {**data.get("Conditions", {}), **{k: v for k, v in used_by["Conditions"].items() if k not in fixed}},
         "Resources": {**data["Resources"], **resources},
         "Outputs": outputs,
     }

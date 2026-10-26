@@ -61,8 +61,8 @@ Resources:
                 Resource: !Sub arn:${AWS::Partition}:aps:${AWS::Region}:${AWS::AccountId}:workspace/${AmpWorkspaceId}
         - !If
           - HasCollection
-          # aoss:APIAccessAll only lets requests through; HudDataAccessPolicy decides what they may do. IAM can't
-          # name a collection by name, only by id, hence collection/*.
+          # OpenSearch Serverless needs aoss:APIAccessAll for any data call; HudDataAccessPolicy limits it to reading.
+          # The condition keeps it to this collection even if another one's data access policy grants your account root.
           - PolicyName: opensearch-read
             PolicyDocument:
               Version: "2012-10-17"
@@ -70,9 +70,8 @@ Resources:
                 - Effect: Allow
                   Action: aoss:APIAccessAll
                   Resource: !Sub arn:${AWS::Partition}:aoss:${AWS::Region}:${AWS::AccountId}:collection/*
-                - Effect: Allow
-                  Action: aoss:BatchGetCollection
-                  Resource: "*"
+                  Condition:
+                    StringEquals: { aoss:collection: !Ref CollectionName }
           - !Ref AWS::NoValue
 
   HudDataAccessPolicy:

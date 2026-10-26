@@ -19,6 +19,13 @@ Parameters:
   ServiceMapWindow:
     Type: String
     Default: 30s
+  DataWritePrincipals:
+    Type: String
+    Default: ""
+    Description: Optional. Comma-separated IAM role or user ARNs (no spaces) that may also write to the collection (create and update indexes and documents). Everyone in your account can already read it; empty means only the pipeline writes.
+
+Conditions:
+  HasDataWritePrincipals: !Not [!Equals [!Ref DataWritePrincipals, ""]]
 
 Resources:
   EncryptionPolicy:
@@ -72,7 +79,9 @@ Resources:
                 Action: aps:RemoteWrite
                 Resource: !GetAtt Workspace.Arn
 
-  # The account root principal lets IAM users and roles with aoss permissions (e.g. people using the UI) read the data.
+  # The pipeline writes; everyone in the account (with aoss:APIAccessAll in IAM) reads, which covers OpenSearch UI
+  # users and the UI setup. Data access policies have no deny, so the root rule stays read-only: a writable one would
+  # let every role in the account write here, Hud's included.
   DataAccessPolicy:
     Type: AWS::OpenSearchServerless::AccessPolicy
     Properties:
@@ -82,7 +91,26 @@ Resources:
         [{"Rules":[
         {"ResourceType":"index","Resource":["index/${Name}/*"],"Permission":["aoss:CreateIndex","aoss:UpdateIndex","aoss:DescribeIndex","aoss:ReadDocument","aoss:WriteDocument"]},
         {"ResourceType":"collection","Resource":["collection/${Name}"],"Permission":["aoss:CreateCollectionItems","aoss:DeleteCollectionItems","aoss:UpdateCollectionItems","aoss:DescribeCollectionItems"]}],
-        "Principal":["${PipelineRole.Arn}","arn:${AWS::Partition}:iam::${AWS::AccountId}:root"]}]
+        "Principal":["${PipelineRole.Arn}"]},
+        {"Rules":[
+        {"ResourceType":"index","Resource":["index/${Name}/*"],"Permission":["aoss:DescribeIndex","aoss:ReadDocument"]},
+        {"ResourceType":"collection","Resource":["collection/${Name}"],"Permission":["aoss:DescribeCollectionItems"]}],
+        "Principal":["arn:${AWS::Partition}:iam::${AWS::AccountId}:root"]}]
+
+  # Write access as earlier versions gave the whole account (the pipeline's permissions), for the roles you name.
+  WritersAccessPolicy:
+    Type: AWS::OpenSearchServerless::AccessPolicy
+    Condition: HasDataWritePrincipals
+    Properties:
+      Name: !Sub ${Name}-write
+      Type: data
+      Policy: !Sub
+        - >-
+          [{"Rules":[
+          {"ResourceType":"index","Resource":["index/${Name}/*"],"Permission":["aoss:CreateIndex","aoss:UpdateIndex","aoss:DescribeIndex","aoss:ReadDocument","aoss:WriteDocument"]},
+          {"ResourceType":"collection","Resource":["collection/${Name}"],"Permission":["aoss:CreateCollectionItems","aoss:DeleteCollectionItems","aoss:UpdateCollectionItems","aoss:DescribeCollectionItems"]}],
+          "Principal":["${Principals}"]}]
+        - Principals: !Join ['","', !Split [",", !Ref DataWritePrincipals]]
 
   # Rendered from the official installer's serverless pipeline (aws/cli-installer/src/render.mjs, renderPipeline).
   Pipeline:
@@ -240,8 +268,11 @@ Outputs:
     Description: Pass to the collector stack as OsisPipelineName.
     Value: !Ref Name
   CollectionName:
-    Description: Pass to the access stack (hud-access.yaml) as CollectionName.
+    Description: Give this to Hud, with CollectionEndpoint. Pass to the access stack (hud-access.yaml) as CollectionName.
     Value: !Ref Name
+  CollectionEndpoint:
+    Description: Give this to Hud, with CollectionName.
+    Value: !GetAtt Collection.CollectionEndpoint
   OtlpEndpoint:
     Description: Base OTLP endpoint for other OTel collectors (append /v1/logs, /v1/traces or /v1/metrics; SigV4, service osis).
     Value: !Sub

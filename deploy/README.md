@@ -27,7 +27,10 @@ Two modes:
   4 GB, ARM64, 1 task;
 - a read-only role Hud can assume to query that data (see [Hud access](#hud-access)).
 
-Subnets need outbound internet (NAT) to pull the image and reach AMP and OSIS. The task pulls the public
+Deploy the collector into public subnets (with a route to an internet gateway). The tasks get public IPs
+(`AssignPublicIp=ENABLED`, the default) to pull the image and reach AMP and OSIS, but the security group only
+opens port 4318 to `AllowedCidr` (your VPC CIDR; `0.0.0.0/0` is rejected), so nothing is reachable from the
+internet. For private subnets with a NAT gateway, see [alternatives](alternatives.md#private-subnets). The task pulls the public
 `ghcr.io/code-hud/hud-otel-collector` image; to use a copy in your account's ECR, pass `Image`. The AMP
 workspace is kept if the stack is deleted.
 
@@ -42,7 +45,8 @@ aws cloudformation deploy --stack-name hud --template-file deploy/aws/unified-ec
 
 **Your apps.** Set `HUD_OTLP_ENDPOINT` and `HUD_OTLP_TEMPORALITY` in your apps to the stack's `OtlpEndpoint` and
 `OtlpTemporality` outputs. Metrics show up in the OpenSearch UI (`DashboardUrl` output) through its AMP data
-source (PromQL), and investigations in its logs.
+source (PromQL), and investigations in its logs, for anyone in your account (see
+[Who can read the collection](#who-can-read-the-collection)).
 
 ### Already running the observability stack?
 
@@ -97,10 +101,27 @@ The role trusts Hud's account (or only the role in `HudPrincipalArn`, if set), a
 gives you. It can only read:
 - AMP: `aps:QueryMetrics`, `aps:GetSeries`, `aps:GetLabels` and `aps:GetMetricMetadata` on the stack's AMP workspace.
 - OpenSearch Serverless: describe the collection and its indexes and read documents (investigations), through a
-  data access policy on the stack's collection, plus `aoss:BatchGetCollection` to find its endpoint.
+  data access policy on the stack's collection. Its IAM policy allows `aoss:APIAccessAll`, which OpenSearch
+  Serverless requires for any data call, only for that collection (`aoss:collection` condition).
 
-Give Hud the `HudRoleArn` and `HudExternalId` outputs. To revoke access, delete the stack (with the one-stack
-deploy this removes the collector and Observability Stack too), or delete the role in IAM.
+It can't write to AMP or to any collection. Give Hud the `HudRoleArn`, `HudExternalId`, `CollectionName` and
+`CollectionEndpoint` outputs. To revoke access, delete the stack (with the one-stack deploy this removes the
+collector and Observability Stack too), or delete the role in IAM.
 
-In the Observability Stack, the collection's own data access policy also grants your account root, so any role
-in your account with `aoss:APIAccessAll`, including Hud's, can also write and delete documents there.
+### Who can read the collection
+
+The collection's data access policies allow:
+- the OSIS pipeline role: write (the only writer by default);
+- your account root: read (describe the collection and its indexes, read documents), so any IAM role or user in
+  your account that also has `aoss:APIAccessAll` (and `aoss:DashboardsAccessAll` for the OpenSearch UI) in IAM can
+  read the data. This covers the OpenSearch UI setup and your OpenSearch UI users. Index patterns, saved searches,
+  visualizations and dashboards are stored in the OpenSearch UI app, not in the collection, so read access is enough
+  for them;
+- Hud's role: read;
+- the IAM roles or users in `DataWritePrincipals` (optional, comma-separated ARNs, no spaces): write, i.e. create and
+  update indexes and documents, as the pipeline can. Empty by default. Use it only for something that writes to
+  the collection itself, such as index or document requests in Dev Tools.
+
+Deployed an earlier version? Its policy gave your account root read and write. Updating the stack makes everyone
+in your account read-only; what the OpenSearch UI shows doesn't change. If something of yours writes to the
+collection, pass its role in `DataWritePrincipals` in the same update.
