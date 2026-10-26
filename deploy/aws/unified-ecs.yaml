@@ -57,7 +57,7 @@ Parameters:
     Default: 30s
   ClusterName:
     Type: String
-    Description: Existing ECS cluster to run the collector in.
+    Description: Your existing ECS cluster to run the collector in.
   VpcId:
     Type: AWS::EC2::VPC::Id
   SubnetIds:
@@ -71,7 +71,7 @@ Parameters:
     - ENABLED
   AllowedCidr:
     Type: String
-    Description: CIDR of the apps that send metrics (usually the VPC CIDR). Opens port 4318 to it.
+    Description: CIDR of your apps that send metrics (usually your VPC CIDR). Opens port 4318 to it.
     AllowedPattern: ^\d{1,3}(\.\d{1,3}){3}/\d{1,2}$
   Mode:
     Type: String
@@ -79,7 +79,7 @@ Parameters:
     AllowedValues:
     - merge
     - convert
-    Description: merge = one series per collector task (apps must send deltas). convert = one series per app pod.
+    Description: merge = one series per collector task (your apps must send deltas). convert = one series per app pod.
   ExportInterval:
     Type: String
     Default: 60s
@@ -109,11 +109,11 @@ Parameters:
   Image:
     Type: String
     Default: ghcr.io/code-hud/hud-otel-collector:0.163.2-hud.2
-    Description: Public image, or a copy in this account's ECR.
+    Description: Public image, or a copy in your account's ECR.
   DnsNamespace:
     Type: String
     Default: hud.local
-    Description: Private DNS namespace created in the VPC. Apps send to hud-collector.<namespace>:4318.
+    Description: Private DNS namespace created in your VPC. Your apps send to hud-collector.<namespace>:4318.
   HudAccountId:
     Type: String
     Default: '736129612463'

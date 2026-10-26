@@ -42,10 +42,9 @@ cosign verify-blob checksums.txt --bundle checksums.txt.sigstore.json \
 sha256sum --ignore-missing -c checksums.txt
 ```
 
-## Deploying
+## Deploying to your AWS account
 
-See [deploy/README.md](deploy/README.md) for deploying into a customer AWS account: one stack on ECS Fargate,
-or EKS with Helm.
+See [deploy/README.md](deploy/README.md): one stack on ECS Fargate, or EKS with Helm.
 
 ## Local development
 

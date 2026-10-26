@@ -1,6 +1,6 @@
 # Values for the official chart: https://github.com/open-telemetry/opentelemetry-helm-charts/tree/main/charts/opentelemetry-collector
 # Required: --set-string extraEnvs[0].value=<AMP remote write URL>,extraEnvs[1].value=<region>
-# Merge mode by default (apps must send deltas). For one series per pod add -f values-convert.yaml.
+# Merge mode by default (your apps must send deltas). For one series per pod add -f values-convert.yaml.
 mode: deployment
 fullnameOverride: hud-collector
 replicaCount: 1

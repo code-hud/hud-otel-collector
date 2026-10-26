@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: Read-only IAM role that Hud's AWS account can assume to query this account's AMP workspace and OpenSearch Serverless collection. Delete the stack to revoke access.
+Description: Read-only IAM role that Hud's AWS account can assume to query your AMP workspace and OpenSearch Serverless collection. Delete the stack to revoke access.
 
 Metadata:
   AWS::CloudFormation::Interface:
@@ -28,11 +28,11 @@ Parameters:
   AmpWorkspaceId:
     Type: String
     AllowedPattern: ^ws-[\w-]+$
-    Description: AMP workspace (ws-...) Hud may query.
+    Description: Your AMP workspace (ws-...) Hud may query.
   CollectionName:
     Type: String
     Default: ""
-    Description: Optional. OpenSearch Serverless collection Hud may read (investigations). Empty for metrics only.
+    Description: Optional. Your OpenSearch Serverless collection Hud may read (investigations). Empty for metrics only.
 
 Conditions:
   HasPrincipal: !Not [!Equals [!Ref HudPrincipalArn, ""]]
