@@ -6,6 +6,7 @@ set -euo pipefail
 IMAGE=${IMAGE:-hud-otelcol:dev}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT=$(mktemp -d)
+chmod 755 "$OUT" # the collector image runs as non-root
 trap 'rm -rf "$OUT"' EXIT
 
 echo "--- cfn-lint"
