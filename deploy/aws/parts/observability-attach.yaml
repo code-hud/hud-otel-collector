@@ -6,7 +6,7 @@ Description: >-
 Metadata:
   AWS::CloudFormation::Interface:
     ParameterGroups:
-      - Label: { default: Your OpenSearch UI }
+      - Label: { default: OpenSearch UI (optional) }
         Parameters: [ExistingUiAppId]
 
 Parameters:
@@ -23,7 +23,7 @@ Parameters:
     Type: String
     Default: ""
     AllowedPattern: ^([a-z0-9]{3,30})?$
-    Description: Optional. Id of your OpenSearch UI application to add Hud's collection and AMP workspace to as data sources. Empty to skip.
+    Description: Empty creates a new OpenSearch UI application with an Observability workspace. If you already have one, put its id here (aws opensearch list-applications) to add Hud's collection and AMP workspace to it as data sources instead; your other data sources are kept.
 
 Conditions:
   AttachToUi: !Not [!Equals [!Ref ExistingUiAppId, ""]]

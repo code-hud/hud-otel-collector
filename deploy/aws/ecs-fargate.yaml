@@ -81,6 +81,13 @@ Parameters:
     Description: Keep the default unless your VPC already has a private DNS zone with this name (for example another Hud stack). Your apps send to hud-collector.<name>:4318. Lowercase letters, digits, hyphens and dots, e.g. hud2.local; not a domain you use publicly.
 
 Rules:
+  # An empty subnet list would only fail when the service is created, after everything else.
+  SubnetsInVpc:
+    Assertions:
+      - Assert: !Not [!EachMemberIn [!Ref SubnetIds, [""]]]
+        AssertDescription: Pick at least one subnet for the collector tasks.
+      - Assert: !EachMemberEquals [!ValueOfAll [AWS::EC2::Subnet::Id, VpcId], !Ref VpcId]
+        AssertDescription: The subnets must be in the VPC you picked.
   AllowedCidrNotPublic:
     Assertions:
       - Assert: !Not [!Equals [!Ref AllowedCidr, 0.0.0.0/0]]

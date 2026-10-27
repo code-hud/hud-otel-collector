@@ -76,6 +76,8 @@ def refs(x):
     def f(n):
         if isinstance(n, Tag) and n.tag == "!Ref":
             found.add(n.value)
+        if isinstance(n, Tag) and n.tag == "!GetAtt":
+            found.add((n.value if isinstance(n.value, str) else n.value[0]).split(".")[0])
         if isinstance(n, Tag) and n.tag == "!Sub":
             s, local = (n.value, {}) if isinstance(n.value, str) else n.value
             found.update(set(re.findall(r"\$\{([\w:.]+)\}", s)) - set(local))
@@ -88,10 +90,13 @@ def refs(x):
 AWS = Path(__file__).resolve().parent.parent / "deploy" / "aws"
 PROVIDER = "parts/observability-data.yaml"
 # Tag each consumer goes by in the data outputs' "Pass to the <tag> stack" descriptions.
-TAGS = {"ecs-fargate.yaml": "collector", "hud-access.yaml": "access",
-        "parts/observability-ui.yaml": "UI", "parts/observability-attach.yaml": "attach"}
+TAGS = {"ecs-fargate.yaml": "collector", "eks-iam.yaml": "collector", "hud-access.yaml": "access",
+        "parts/observability-ui.yaml": "UI", "parts/observability-attach.yaml": "attach",
+        "parts/collector-platform.yaml": "platform"}
 # Parts that are never deployed on their own, so outputs only for them are always internal.
-INTERNAL = {"UI", "attach"}
+INTERNAL = {"UI", "attach", "platform"}
+# What both one-stack templates share: Hud access, and a new OpenSearch UI app unless you name yours (ExistingUiAppId).
+COMMON = ["hud-access.yaml", "parts/observability-ui.yaml", "parts/observability-attach.yaml"]
 # Stack-unique names (the first block of the stack id), so they can't clash with a stack you already run.
 UNIQUE_NAME = Tag("!Join", ["-", [Tag("!Ref", "NamePrefix"), Tag("!Select", [0, Tag("!Split", ["-", Tag("!Select", [
     2, Tag("!Split", ["/", Tag("!Ref", "AWS::StackId")])])])])]])
@@ -103,6 +108,7 @@ NAME_PREFIX = {
     "Description": "Start of the collection, pipeline, AMP workspace and policy names. The stack adds a unique "
                    "suffix, e.g. hud-1a2b3c4d (3-16 lowercase characters).",
 }
+NEW_UI = ("NewUi", Tag("!Equals", [Tag("!Ref", "ExistingUiAppId"), ""]))
 OUTPUTS = {
     "observability.yaml": {
         "consumers": ["parts/observability-ui.yaml"],
@@ -111,18 +117,23 @@ OUTPUTS = {
                        "Ingestion pipeline, Amazon Managed Service for Prometheus, and an OpenSearch UI application with "
                        "an Observability workspace.",
     },
-    "unified-ecs.yaml": {
-        "consumers": ["ecs-fargate.yaml", "hud-access.yaml", "parts/observability-ui.yaml"],
-        "description": "Hud OpenTelemetry collector on ECS Fargate plus the Observability Stack it writes to (OpenSearch "
-                       "Serverless, OpenSearch Ingestion, Amazon Managed Service for Prometheus, OpenSearch UI) and a "
-                       "read-only role Hud can assume to query it, in one stack.",
+    "hud-ecs.yaml": {
+        "consumers": ["ecs-fargate.yaml"] + COMMON,
+        "gates": {"parts/observability-ui.yaml": NEW_UI},
+        "description": "Hud on ECS Fargate, in one stack: the Hud OpenTelemetry collector in your ECS cluster, the "
+                       "Observability data it writes to (OpenSearch Serverless, OpenSearch Ingestion, Amazon Managed "
+                       "Service for Prometheus; uniquely named), a read-only role Hud can assume to query it, and a new "
+                       "OpenSearch UI app or your existing one (ExistingUiAppId).",
+        "unique_name": True,
     },
-    "unified-ecs-existing-ui.yaml": {
-        "consumers": ["ecs-fargate.yaml", "hud-access.yaml", "parts/observability-attach.yaml"],
-        "description": "For when you already run the Observability Stack: Hud's own OpenSearch Serverless collection, "
-                       "OpenSearch Ingestion pipeline and AMP workspace (uniquely named, next to yours), the Hud "
-                       "OpenTelemetry collector on ECS Fargate, and a read-only role Hud can assume to query them. "
-                       "Optionally adds the collection and workspace to your OpenSearch UI application.",
+    "hud.yaml": {
+        "consumers": ["parts/collector-platform.yaml", "eks-iam.yaml"] + COMMON,
+        "gates": {"parts/observability-ui.yaml": NEW_UI,
+                  "eks-iam.yaml": ("Eks", Tag("!Equals", [Tag("!Ref", "CollectorPlatform"), "EKS"]))},
+        "description": "Hud on EKS or with a collector you run, in one stack: the Observability data your collector "
+                       "writes to (OpenSearch Serverless, OpenSearch Ingestion, Amazon Managed Service for Prometheus; "
+                       "uniquely named), a read-only role Hud can assume to query it, a new OpenSearch UI app or your "
+                       "existing one (ExistingUiAppId), and on EKS the collector's IAM role for the Helm chart.",
         "unique_name": True,
     },
 }
@@ -169,9 +180,12 @@ def rewriter(bound, fixed):
     return rewrite
 
 
-def build(consumers, description, unique_name=False):
+def build(consumers, description, unique_name=False, gates={}):
     data = load(PROVIDER)
-    used_by = merge(*(load(n) for n in consumers))
+    loaded = {n: load(n) for n in consumers}
+    for t in loaded.values():
+        t.get("Resources", {}).pop("Placeholder", None)
+    used_by = merge(*loaded.values())
     included = {TAGS[n] for n in consumers}
     bound, internal = {}, set()
     for k, o in data["Outputs"].items():
@@ -199,6 +213,32 @@ def build(consumers, description, unique_name=False):
     assert not set(data["Resources"]) & set(resources), set(data["Resources"]) & set(resources)
 
     outputs = walk(used_by["Outputs"], rewrite)
+    for o in outputs.values():
+        m = re.search(r"Pass to the (.+?) stacks? (?:\(.*?\) )?as (\w+)\.", o.get("Description", ""))
+        if m and set(re.split(r", | and ", m.group(1))) <= included:
+            del o["Description"]
+    rules = {k: v for k, v in used_by.get("Rules", {}).items() if not refs(v) & set(bound)}
+    conditions = {**data.get("Conditions", {}), **{k: v for k, v in used_by["Conditions"].items() if k not in fixed}}
+
+    # A gated consumer's resources, rules and the outputs that use its resources apply only when its condition holds.
+    def gate_on(gate, c):
+        if c in (None, gate):
+            return gate
+        conditions[gate + c] = Tag("!And", [Tag("!Condition", gate), Tag("!Condition", c)])
+        return gate + c
+
+    for n, (gate, expr) in gates.items():
+        conditions[gate] = expr
+        gated = set(loaded[n].get("Resources", {})) & set(resources)
+        for k in sorted(gated):
+            resources[k] = {"Condition": gate_on(gate, resources[k].pop("Condition", None)), **resources[k]}
+        for k, o in outputs.items():
+            if {r.split(".")[0] for r in refs(o)} & gated:
+                outputs[k] = {"Condition": gate_on(gate, o.pop("Condition", None)), **o}
+        for k in sorted(set(loaded[n].get("Rules", {})) & set(rules)):
+            rc = rules[k].get("RuleCondition")
+            rules[k] = {"RuleCondition": Tag("!And", [conditions[gate], rc]) if rc else conditions[gate], **rules[k]}
+
     for k, o in data["Outputs"].items():
         if k not in internal:
             outputs["Observability" + k if k in outputs else k] = o
@@ -216,8 +256,8 @@ def build(consumers, description, unique_name=False):
         "Description": description,
         "Metadata": {"AWS::CloudFormation::Interface": {"ParameterGroups": groups}} if used_by["Groups"] else {},
         "Parameters": params,
-        "Rules": {k: v for k, v in used_by.get("Rules", {}).items() if not refs(v) & set(bound)},
-        "Conditions": {**data.get("Conditions", {}), **{k: v for k, v in used_by["Conditions"].items() if k not in fixed}},
+        "Rules": rules,
+        "Conditions": conditions,
         "Resources": {**data["Resources"], **resources},
         "Outputs": outputs,
     }
