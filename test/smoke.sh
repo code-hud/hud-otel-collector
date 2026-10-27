@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Five fake pods send delta counters concurrently; the collector must merge them into one
-# Prometheus series whose value is the sum of all deltas.
+# Five fake pods send deltas concurrently. Function metrics must merge into one Prometheus series
+# holding the sum; flow and process metrics must stay one series per pod.
 set -euo pipefail
 
 IMAGE=${IMAGE:-hud-otelcol:dev}
@@ -14,7 +14,7 @@ cleanup
 
 echo "--- components"
 components=$(docker run --rm "$IMAGE" components)
-for c in otlp batch transform delta_to_cumulative interval prometheus_remote_write sigv4auth; do
+for c in otlp batch filter transform delta_to_cumulative interval prometheus_remote_write sigv4auth; do
   grep -q "name: $c\$" <<<"$components" || { echo "missing component: $c"; exit 1; }
 done
 
@@ -31,31 +31,49 @@ docker run -d --name smoke-collector --network $NET -p 14318:4318 -v "$DIR:/cfg:
 
 for _ in $(seq 30); do curl -s -o /dev/null localhost:14318 && break; sleep 1; done
 
-send() { # pod value
-  local now; now=$(($(date +%s) * 1000000000))
+BASE=$(($(date +%s) - 20))
+send() { # pod pid round: a delta of 1 for a function and a flow counter, plus a gauge
+  local start=$(((BASE + $3) * 1000000000)) end=$(((BASE + $3 + 1) * 1000000000))
+  local delta="\"aggregationTemporality\":1,\"isMonotonic\":true,\"dataPoints\":[{\"asInt\":\"1\",\"startTimeUnixNano\":\"$start\",\"timeUnixNano\":\"$end\"}]"
   curl -sf -X POST localhost:14318/v1/metrics -H 'Content-Type: application/json' -d @- <<EOF >/dev/null
 {"resourceMetrics":[{"resource":{"attributes":[
   {"key":"service.name","value":{"stringValue":"smoke"}},
-  {"key":"service.instance.id","value":{"stringValue":"$1"}}]},
- "scopeMetrics":[{"metrics":[{"name":"hud.smoke","sum":{
-  "aggregationTemporality":1,"isMonotonic":true,
-  "dataPoints":[{"asInt":"$2","startTimeUnixNano":"$now","timeUnixNano":"$now"}]}}]}]}]}
+  {"key":"service.instance.id","value":{"stringValue":"$1"}},
+  {"key":"k8s.pod.name","value":{"stringValue":"$1"}},
+  {"key":"process.pid","value":{"intValue":"$2"}}]},
+ "scopeMetrics":[{"metrics":[
+  {"name":"code.function.calls","sum":{$delta}},
+  {"name":"hud.flow.messages","sum":{$delta}},
+  {"name":"process.memory.usage","gauge":{"dataPoints":[{"asInt":"$2","timeUnixNano":"$end"}]}}]}]}]}
 EOF
 }
 
-echo "--- send 5 pods x 10 deltas of 1, concurrently"
-for _ in $(seq 10); do
-  for p in a b c d e; do send "pod-$p" 1 & done
+echo "--- send 5 pods x 10 rounds, concurrently"
+for r in $(seq 10); do
+  pid=100; for p in a b c d e; do send "pod-$p" $((pid++)) "$r" & done
   wait
 done
 
 query() { curl -s localhost:19090/api/v1/query --data-urlencode "query=$1" | sed -n 's/.*"value":\[[^,]*,"\([^"]*\)"\].*/\1/p'; }
+# function calls: pod attributes dropped, one series under the collector's instance, the sum of all pods
+# flow messages and memory gauges: one series per pod
+checks=(
+  'sum(code_function_calls_total)=50'
+  'count(code_function_calls_total)=1'
+  'count(code_function_calls_total{instance=~"pod-.*"}) or vector(0)=0'
+  'sum(hud_flow_messages_total)=50'
+  'count(hud_flow_messages_total{instance=~"pod-.*"})=5'
+  'count(process_memory_usage{instance=~"pod-.*"})=5'
+)
 
 for _ in $(seq 30); do
-  total=$(query 'sum(hud_smoke_total)'); series=$(query 'count(hud_smoke_total)')
-  [ "$total" = "50" ] && [ "$series" = "1" ] && { echo "PASS: total=$total series=$series"; exit 0; }
+  failed=()
+  for c in "${checks[@]}"; do
+    got=$(query "${c%=*}"); [ "$got" = "${c##*=}" ] || failed+=("${c%=*}: got ${got:-none}, want ${c##*=}")
+  done
+  [ ${#failed[@]} = 0 ] && { echo "PASS: ${#checks[@]} checks"; exit 0; }
   sleep 1
 done
-echo "FAIL: total=${total:-none} series=${series:-none} (want 50 and 1)"
+printf 'FAIL: %s\n' "${failed[@]}"
 docker logs smoke-collector | tail -30
 exit 1

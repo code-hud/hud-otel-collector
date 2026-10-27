@@ -89,7 +89,7 @@ Parameters:
     AllowedValues:
     - merge
     - convert
-    Description: merge = one series per collector task (your apps must send deltas). convert = one series per app pod.
+    Description: merge = function metrics add into one series per collector task (your apps must send them as deltas); other metrics stay per app pod. convert = one series per app pod for every metric.
   ExportInterval:
     Type: String
     Default: 60s
@@ -118,7 +118,7 @@ Parameters:
     MinValue: 1
   Image:
     Type: String
-    Default: ghcr.io/code-hud/hud-otel-collector:0.163.2-hud.2
+    Default: ghcr.io/code-hud/hud-otel-collector:0.163.2-hud.3
     Description: Public image, or a copy in your account's ECR.
   DnsNamespace:
     Type: String
@@ -663,11 +663,19 @@ Resources:
                 check_interval: 1s
                 limit_percentage: 80
                 spike_limit_percentage: 20
+              filter/functions:
+                metrics:
+                  metric: ['not IsMatch(name, "^code\\.function\\.")']
+              filter/per_pod:
+                metrics:
+                  metric: ['IsMatch(name, "^code\\.function\\.")']
               batch:
-              transform/collector_id:
+              transform/merge:
                 metric_statements:
                   - context: resource
-                    statements: ['set(attributes["service.instance.id"], "${!env:HOSTNAME}")']
+                    statements:
+                      - keep_keys(attributes, ["service.name", "deployment.environment.name", "deployment.id", "k8s.namespace.name", "cloud.provider", "cloud.region", "telemetry.sdk.name", "telemetry.sdk.language", "telemetry.sdk.version", "hud.identity.version"])
+                      - set(attributes["service.instance.id"], "${!env:HOSTNAME}")
               transform/restamp:
                 metric_statements:
                   - context: datapoint
@@ -685,15 +693,17 @@ Resources:
             service:
               extensions: ${Extensions}
               pipelines:
-                metrics:
-                  receivers: [otlp]
-                  processors: ${Processors}
-                  exporters: [prometheus_remote_write]
+                ${FunctionsPipeline}
+                ${PerPodPipeline}
                 ${LogsPipeline}
-          - Processors: !If
+          - FunctionsPipeline: !If
             - Merge
-            - '[memory_limiter, batch, transform/collector_id, transform/restamp, delta_to_cumulative, interval]'
-            - '[memory_limiter, batch, delta_to_cumulative]'
+            - 'metrics/functions: {receivers: [otlp], processors: [memory_limiter, filter/functions, batch, transform/merge, transform/restamp, delta_to_cumulative, interval], exporters: [prometheus_remote_write]}'
+            - ''
+            PerPodPipeline: !If
+            - Merge
+            - 'metrics/per_pod: {receivers: [otlp], processors: [memory_limiter, filter/per_pod, batch, delta_to_cumulative], exporters: [prometheus_remote_write]}'
+            - 'metrics: {receivers: [otlp], processors: [memory_limiter, batch, delta_to_cumulative], exporters: [prometheus_remote_write]}'
             OsisAuth: !Sub 'sigv4auth/osis: {region: ''${AWS::Region}'', service: osis}'
             OsisExporter: !Sub
             - 'otlp_http/osis: {logs_endpoint: ''${OsisLogsUrl}'', auth: {authenticator: sigv4auth/osis}, compression: none}'

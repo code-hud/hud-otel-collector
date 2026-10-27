@@ -85,8 +85,14 @@ for f in "$OUT"/*.yaml; do
     "$IMAGE" validate --config "/cfg/$(basename "$f")"
   echo "ok: $(basename "$f")"
 done
-grep -q 'transform/restamp' "$OUT/ecs-merge.yaml" "$OUT/helm-merge.yaml"
-grep -q 'exporters: \[otlp_http/osis\]' "$OUT/ecs-merge-logs.yaml" "$OUT/ecs-convert-logs.yaml"
-! grep -q 'osis' "$OUT/ecs-merge.yaml"
-! grep -q 'processors: \[memory_limiter, batch, transform' "$OUT/helm-convert.yaml"
+has() { grep -q "$1" "$OUT/$2.yaml" || { echo "FAIL: $2 lacks $1"; exit 1; }; }
+lacks() { ! grep -q "$1" "$OUT/$2.yaml" || { echo "FAIL: $2 has $1"; exit 1; }; }
+# transform/restamp appears on two lines when a pipeline uses it (definition + pipeline), one when only defined
+uses_restamp() { [ "$(grep -c 'transform/restamp' "$OUT/$1.yaml")" -ge 2 ]; }
+for f in ecs-merge ecs-merge-logs helm-merge; do
+  has 'metrics/per_pod' $f; has 'keep_keys' $f; uses_restamp $f || { echo "FAIL: $f doesn't merge"; exit 1; }
+done
+for f in ecs-convert ecs-convert-logs helm-convert; do ! uses_restamp $f || { echo "FAIL: $f merges"; exit 1; }; done
+for f in ecs-merge-logs ecs-convert-logs; do has 'exporters: \[otlp_http/osis\]' $f; done
+for f in ecs-merge ecs-convert helm-merge helm-convert; do lacks 'osis' $f; done
 echo PASS

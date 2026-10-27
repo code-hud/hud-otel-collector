@@ -1,4 +1,5 @@
-# The pod-merging pipeline, exported to a local Prometheus.
+# The merge-mode pipelines of deploy/, exported to a local Prometheus: function metrics merge
+# across pods, everything else stays per pod.
 receivers:
   otlp:
     protocols:
@@ -6,13 +7,21 @@ receivers:
         endpoint: 0.0.0.0:4318
 
 processors:
+  filter/functions:
+    metrics:
+      metric: ['not IsMatch(name, "^code\\.function\\.")']
+  filter/per_pod:
+    metrics:
+      metric: ['IsMatch(name, "^code\\.function\\.")']
   # Serializes concurrent pod requests: re-stamping and deltatocumulative aren't
   # atomic, so without it a point stamped earlier can land later and be dropped.
   batch:
-  transform/drop_pod:
+  transform/merge:
     metric_statements:
       - context: resource
-        statements: ['delete_key(attributes, "service.instance.id")']
+        statements:
+          - keep_keys(attributes, ["service.name", "deployment.environment.name", "deployment.id", "k8s.namespace.name", "cloud.provider", "cloud.region", "telemetry.sdk.name", "telemetry.sdk.language", "telemetry.sdk.version", "hud.identity.version"])
+          - set(attributes["service.instance.id"], "${env:HOSTNAME}")
   transform/restamp:
     metric_statements:
       - context: datapoint
@@ -28,7 +37,11 @@ exporters:
 
 service:
   pipelines:
-    metrics:
+    metrics/functions:
       receivers: [otlp]
-      processors: [batch, transform/drop_pod, transform/restamp, deltatocumulative, interval]
+      processors: [filter/functions, batch, transform/merge, transform/restamp, deltatocumulative, interval]
+      exporters: [prometheusremotewrite]
+    metrics/per_pod:
+      receivers: [otlp]
+      processors: [filter/per_pod, batch, deltatocumulative]
       exporters: [prometheusremotewrite]

@@ -7,7 +7,7 @@ replicaCount: 1
 
 image:
   repository: ghcr.io/code-hud/hud-otel-collector
-  tag: "0.163.2-hud.2"
+  tag: "0.163.2-hud.3"
 command:
   name: hud-otelcol
 
@@ -53,13 +53,22 @@ alternateConfig:
       check_interval: 1s
       limit_percentage: 80
       spike_limit_percentage: 20
+    # Function metrics (code.function.*) merge across app pods; everything else (flow, process) stays per pod.
+    filter/functions:
+      metrics:
+        metric: ['not IsMatch(name, "^code\\.function\\.")']
+    filter/per_pod:
+      metrics:
+        metric: ['IsMatch(name, "^code\\.function\\.")']
     # Serializes concurrent requests; without it, re-stamped points can reach delta_to_cumulative out of order and be dropped.
     batch: {}
-    # Each collector pod writes only its own series.
-    transform/collector_id:
+    # Drops per-pod resource attributes; each collector pod writes only its own series.
+    transform/merge:
       metric_statements:
         - context: resource
-          statements: ['set(attributes["service.instance.id"], "${env:HOSTNAME}")']
+          statements:
+            - keep_keys(attributes, ["service.name", "deployment.environment.name", "deployment.id", "k8s.namespace.name", "cloud.provider", "cloud.region", "telemetry.sdk.name", "telemetry.sdk.language", "telemetry.sdk.version", "hud.identity.version"])
+            - set(attributes["service.instance.id"], "${env:HOSTNAME}")
     transform/restamp:
       metric_statements:
         - context: datapoint
@@ -76,7 +85,11 @@ alternateConfig:
   service:
     extensions: [health_check, sigv4auth]
     pipelines:
-      metrics:
+      metrics/functions:
         receivers: [otlp]
-        processors: [memory_limiter, batch, transform/collector_id, transform/restamp, delta_to_cumulative, interval]
+        processors: [memory_limiter, filter/functions, batch, transform/merge, transform/restamp, delta_to_cumulative, interval]
+        exporters: [prometheus_remote_write]
+      metrics/per_pod:
+        receivers: [otlp]
+        processors: [memory_limiter, filter/per_pod, batch, delta_to_cumulative]
         exporters: [prometheus_remote_write]

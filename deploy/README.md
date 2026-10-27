@@ -8,9 +8,11 @@ Investigations (Hud's error forensics) are sent as OTLP logs to the
 pipeline, so they land in its OpenSearch.
 
 Two modes:
-- `merge` (default): all your app pods add into one series per collector task/pod. Your apps must set
-  `HUD_OTLP_TEMPORALITY=delta`.
-- `convert`: one series per app pod, no changes to your apps.
+- `merge` (default): function metrics (`code.function.*`) from all your app pods add into one series per
+  collector task/pod. Per-pod resource attributes (`process.pid`, `k8s.pod.name`, ...) are dropped from them,
+  keeping service, environment, deployment, namespace and cloud. Flow and process metrics stay one series per
+  app pod. Your apps must send function metrics as deltas.
+- `convert`: one series per app pod for every metric.
 
 > **Test links.** The "Launch in CloudFormation" links below open the console in `us-east-1` with templates
 > from a temporary test bucket. They will move to the real public bucket later.
