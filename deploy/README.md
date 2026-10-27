@@ -47,6 +47,11 @@ stack (~10 minutes):
 For testing, `scripts/quick-create-link.sh` prints a new ExternalId and the links of both templates with it
 prefilled (the bare links below leave it empty). The AMP workspace is kept if the stack is deleted.
 
+The templates' Rules (e.g. at least one subnet, subnets in the chosen VPC, `ClusterName` with EKS) are checked
+when the stack is created, as the console's quick-create does: a bad value rolls the stack back at once with the
+Rule's message. They aren't checked when a change set is created (`aws cloudformation deploy` uses change sets), so
+there a bad value fails later, at the resource that uses it.
+
 ### ECS Fargate: `hud-ecs.yaml`
 
 The collector runs as a service in your existing ECS cluster and VPC, reachable at

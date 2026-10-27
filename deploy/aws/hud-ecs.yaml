@@ -597,11 +597,6 @@ Resources:
         FromPort: 4318
         ToPort: 4318
         CidrIp: !Ref 'AllowedCidr'
-      Tags:
-      - Key: hud:first-subnet
-        Value: !Select
-        - 0
-        - !Ref 'SubnetIds'
   Namespace:
     Type: AWS::ServiceDiscovery::PrivateDnsNamespace
     Properties:
