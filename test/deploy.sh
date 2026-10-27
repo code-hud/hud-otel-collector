@@ -59,7 +59,7 @@ yaml.SafeLoader.add_multi_constructor("!", lambda l, s, n: l.construct_sequence(
 t = yaml.safe_load(open("/d/aws/ecs-fargate.yaml"))
 env = t["Resources"]["TaskDefinition"]["Properties"]["ContainerDefinitions"][0]["Environment"]
 tmpl, vars = next(e["Value"] for e in env if e["Name"] == "HUD_OTELCOL_CONFIG")
-params = {"AWS::Region": "us-east-1", "ExportInterval": "60s", "OsisLogsUrl": "https://p.us-east-1.osis.amazonaws.com/p/v1/logs"}
+params = {"AWS::Region": "us-east-1", "ExportInterval": "300", "OsisLogsUrl": "https://p.us-east-1.osis.amazonaws.com/p/v1/logs"}
 def sub(s):
     for k, v in params.items(): s = s.replace("\${" + k + "}", v)
     return s

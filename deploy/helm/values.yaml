@@ -67,7 +67,7 @@ alternateConfig:
       metric_statements:
         - context: resource
           statements:
-            - keep_keys(attributes, ["service.name", "deployment.environment.name", "deployment.id", "k8s.namespace.name", "cloud.provider", "cloud.region", "telemetry.sdk.name", "telemetry.sdk.language", "telemetry.sdk.version", "hud.identity.version"])
+            - keep_keys(attributes, ["service.name", "service.namespace", "deployment.environment.name", "deployment.id", "k8s.namespace.name", "cloud.provider", "cloud.region", "telemetry.sdk.name", "telemetry.sdk.language", "telemetry.sdk.version", "hud.identity.version"])
             - set(attributes["service.instance.id"], "${env:HOSTNAME}")
     transform/restamp:
       metric_statements:
