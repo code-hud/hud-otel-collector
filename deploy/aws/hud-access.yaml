@@ -5,26 +5,17 @@ Metadata:
   AWS::CloudFormation::Interface:
     ParameterGroups:
       - Label: { default: Hud access }
-        Parameters: [HudAccountId, HudPrincipalArn, ExternalId]
+        Parameters: [ExternalId]
       - Label: { default: Data to share }
         Parameters: [AmpWorkspaceId, CollectionName]
 
 Parameters:
-  HudAccountId:
-    Type: String
-    Default: "736129612463"
-    AllowedPattern: ^\d{12}$
-    Description: Hud's AWS account. Trusted as a whole unless HudPrincipalArn is set.
-  HudPrincipalArn:
-    Type: String
-    Default: ""
-    Description: Optional. A specific role in Hud's account to trust instead of the whole account.
   ExternalId:
     Type: String
     MinLength: 2
     MaxLength: 1224
     AllowedPattern: ^[\w+=,.@:/-]+$
-    Description: The external id Hud gave you. Hud must send it when assuming the role.
+    Description: Prefilled by Hud's onboarding link and unique to you. Don't change it; Hud sends it when assuming the role, so with any other value Hud can't read your data.
   AmpWorkspaceId:
     Type: String
     AllowedPattern: ^ws-[\w-]+$
@@ -35,7 +26,6 @@ Parameters:
     Description: Optional. Your OpenSearch Serverless collection Hud may read (investigations). Empty for metrics only.
 
 Conditions:
-  HasPrincipal: !Not [!Equals [!Ref HudPrincipalArn, ""]]
   HasCollection: !Not [!Equals [!Ref CollectionName, ""]]
 
 Resources:
@@ -47,7 +37,7 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              AWS: !If [HasPrincipal, !Ref HudPrincipalArn, !Sub "arn:${AWS::Partition}:iam::${HudAccountId}:root"]
+              AWS: arn:aws:iam::736129612463:root # Hud's AWS account
             Action: sts:AssumeRole
             Condition:
               StringEquals: { sts:ExternalId: !Ref ExternalId }
@@ -88,8 +78,8 @@ Resources:
 
 Outputs:
   HudRoleArn:
-    Description: Give this to Hud, with HudExternalId.
+    Description: Give this to Hud.
     Value: !GetAtt HudRole.Arn
   HudExternalId:
-    Description: Give this to Hud, with HudRoleArn.
+    Description: The ExternalId Hud generated for you, for reference.
     Value: !Ref ExternalId

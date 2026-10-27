@@ -9,13 +9,21 @@ pipeline, so they land in its OpenSearch.
 
 Two modes:
 - `merge` (default): function metrics (`code.function.*`) from all your app pods add into one series per
-  collector task/pod. Per-pod resource attributes (`process.pid`, `k8s.pod.name`, ...) are dropped from them,
-  keeping service, environment, deployment, namespace and cloud. Flow and process metrics stay one series per
-  app pod. Your apps must send function metrics as deltas.
+  collector task/pod and deployment. Per-pod resource attributes (`process.pid`, `k8s.pod.name`, ...) are dropped
+  from them; the kept ones become labels: `deployment_environment_name`, `deployment_id`, `k8s_namespace_name`,
+  `cloud_provider`, `cloud_region`, `telemetry_sdk_version` and `hud_identity_version` (each only when your apps
+  set it). During a rollout the old and new deployments are separate series, so for totals use
+  `sum without (deployment_id, telemetry_sdk_version) (...)`. Flow and process metrics stay one series per app pod.
 - `convert`: one series per app pod for every metric.
+
+Both take the deltas the Hud SDK sends; point your apps at the collector with `HUD_EXPORTER=otlp` and `HUD_OTLP_ENDPOINT`.
 
 > **Test links.** The "Launch in CloudFormation" links below open the console in `us-east-1` with templates
 > from a temporary test bucket. They will move to the real public bucket later.
+
+Your launch link comes from Hud's onboarding, with the `ExternalId` Hud generated for you already filled in; don't
+change it. For testing, `scripts/quick-create-link.sh` prints a new ExternalId and the links of both one-stack
+templates with it prefilled (the bare links below leave it empty).
 
 ## ECS Fargate
 
@@ -31,7 +39,7 @@ Two modes:
 
 Deploy the collector into public subnets (with a route to an internet gateway). The tasks get public IPs
 (`AssignPublicIp=ENABLED`, the default) to pull the image and reach AMP and OSIS, but the security group only
-opens port 4318 to `AllowedCidr` (your VPC CIDR; `0.0.0.0/0` is rejected), so nothing is reachable from the
+opens port 4318 only to `AllowedCidr` (your VPC CIDR; `0.0.0.0/0` is rejected), so nothing is reachable from the
 internet. For private subnets with a NAT gateway, see [alternatives](alternatives.md#private-subnets). The task pulls the public
 `ghcr.io/code-hud/hud-otel-collector` image; to use a copy in your account's ECR, pass `Image`. The AMP
 workspace is kept if the stack is deleted.
@@ -45,8 +53,8 @@ aws cloudformation deploy --stack-name hud --template-file deploy/aws/unified-ec
 
 [Launch in CloudFormation](https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/quickcreate?templateURL=https%3A%2F%2Fhud-cfn-test-736129612463.s3.amazonaws.com%2Ftest%2Funified-ecs.yaml&stackName=hud) (template: `deploy/aws/unified-ecs.yaml`)
 
-**Your apps.** Set `HUD_OTLP_ENDPOINT` and `HUD_OTLP_TEMPORALITY` in your apps to the stack's `OtlpEndpoint` and
-`OtlpTemporality` outputs. Metrics show up in the OpenSearch UI (`DashboardUrl` output) through its AMP data
+**Your apps.** Set `HUD_OTLP_ENDPOINT` and `HUD_EXPORTER` in your apps to the stack's `OtlpEndpoint` and
+`HudExporter` outputs. Metrics show up in the OpenSearch UI (`DashboardUrl` output) through its AMP data
 source (PromQL), and investigations in its logs, for anyone in your account (see
 [Who can read the collection](#who-can-read-the-collection)).
 
@@ -99,14 +107,14 @@ Hud reads your data from its own AWS account (`736129612463`) by assuming a role
 create it; for other setups, deploy `deploy/aws/hud-access.yaml` on its own
 ([alternatives](alternatives.md#hud-access-on-its-own)).
 
-The role trusts Hud's account (or only the role in `HudPrincipalArn`, if set), and only with the `ExternalId` Hud
-gives you. It can only read:
+The role trusts Hud's account, and only with the `ExternalId` Hud generated for you (prefilled in your launch
+link). It can only read:
 - AMP: `aps:QueryMetrics`, `aps:GetSeries`, `aps:GetLabels` and `aps:GetMetricMetadata` on the stack's AMP workspace.
 - OpenSearch Serverless: describe the collection and its indexes and read documents (investigations), through a
   data access policy on the stack's collection. Its IAM policy allows `aoss:APIAccessAll`, which OpenSearch
   Serverless requires for any data call, only for that collection (`aoss:collection` condition).
 
-It can't write to AMP or to any collection. Give Hud the `HudRoleArn`, `HudExternalId`, `CollectionName` and
+It can't write to AMP or to any collection. Give Hud the `HudRoleArn`, `CollectionName` and
 `CollectionEndpoint` outputs. To revoke access, delete the stack (with the one-stack deploy this removes the
 collector and Observability Stack too), or delete the role in IAM.
 
