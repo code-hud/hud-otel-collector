@@ -1,6 +1,12 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: IAM role that lets the Hud OpenTelemetry collector on EKS write to Amazon Managed Service for Prometheus.
 
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: { default: EKS only - the collector's IAM role }
+        Parameters: [ClusterName, AuthMode, OidcProvider, Namespace, ServiceAccount, AmpWorkspaceId]
+
 Parameters:
   ClusterName:
     Type: String
@@ -82,6 +88,9 @@ Resources:
   PodIdentityAssociation:
     Type: AWS::EKS::PodIdentityAssociation
     Condition: PodIdentity
+    # hud.yaml makes ClusterName optional; its Rules require it whenever this is created.
+    Metadata:
+      cfn-lint: { config: { ignore_checks: [W1030] } }
     Properties:
       ClusterName: !Ref ClusterName
       Namespace: !Ref Namespace
