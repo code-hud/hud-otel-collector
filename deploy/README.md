@@ -45,7 +45,11 @@ stack (~10 minutes):
 - a read-only role Hud can assume to query that data (see [Hud access](#hud-access)).
 
 For testing, `scripts/quick-create-link.sh` prints a new ExternalId and the links of both templates with it
-prefilled (the bare links below leave it empty). The AMP workspace is kept if the stack is deleted.
+prefilled (the bare links below leave it empty). The AMP workspace is kept if the stack is deleted, but not when
+the install itself fails. The OSIS pipeline logs to `/aws/vendedlogs/OpenSearchIngestion/<name>/<stack id>` (14
+days), which is also kept, so a pipeline that never becomes active leaves evidence. Turning those logs on needs
+the deploying principal to have CloudWatch Logs delivery permissions (`logs:CreateLogDelivery`,
+`logs:PutResourcePolicy`, `logs:DescribeResourcePolicies`, `logs:DescribeLogGroups`), which administrators have.
 
 The templates' Rules (e.g. at least one subnet, subnets in the chosen VPC, `ClusterName` with EKS) are checked
 when the stack is created, as the console's quick-create does: a bad value rolls the stack back at once with the

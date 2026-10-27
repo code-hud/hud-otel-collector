@@ -228,7 +228,7 @@ Resources:
       Type: SEARCH
   Workspace:
     Type: AWS::APS::Workspace
-    DeletionPolicy: Retain
+    DeletionPolicy: RetainExceptOnCreate
     UpdateReplacePolicy: Retain
     Properties:
       Alias: !Join
@@ -336,6 +336,31 @@ Resources:
                 - !Split
                   - /
                   - !Ref 'AWS::StackId'
+  PipelineLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub
+      - /aws/vendedlogs/OpenSearchIngestion/${Name}/${Id}
+      - Id: !Select
+        - 2
+        - !Split
+          - /
+          - !Ref 'AWS::StackId'
+        Name: !Join
+        - '-'
+        - - !Ref 'NamePrefix'
+          - !Select
+            - 0
+            - !Split
+              - '-'
+              - !Select
+                - 2
+                - !Split
+                  - /
+                  - !Ref 'AWS::StackId'
+      RetentionInDays: 14
   Pipeline:
     Type: AWS::OSIS::Pipeline
     DependsOn: DataAccessPolicy
@@ -355,6 +380,10 @@ Resources:
       MinUnits: !Ref 'MinUnits'
       MaxUnits: !Ref 'MaxUnits'
       PipelineRoleArn: !GetAtt 'PipelineRole.Arn'
+      LogPublishingOptions:
+        IsLoggingEnabled: true
+        CloudWatchLogDestination:
+          LogGroup: !Ref 'PipelineLogGroup'
       PipelineConfigurationBody: !Sub
       - |
         version: '2'
@@ -938,12 +967,19 @@ Resources:
           def dqs_name(p):
               return "%s_%s" % (p["DataSourceName"], p["AppId"])
 
+          # Some OpenSearch calls report a missing resource as ValidationException ("Data source not found").
+          def missing(e):
+              err = getattr(e, "response", {}).get("Error", {})
+              return err.get("Code") == "ResourceNotFoundException" or (
+                  err.get("Code") == "ValidationException" and "not found" in err.get("Message", "").lower())
+
           def ours(os_, p):
               arns = [p["CollectionArn"]]
               try:
                   arns.append(os_.get_direct_query_data_source(DataSourceName=dqs_name(p))["DataSourceArn"])
-              except os_.exceptions.ResourceNotFoundException:
-                  pass
+              except Exception as e:
+                  if not missing(e):
+                      raise
               return arns
 
           def attach(p):
@@ -967,12 +1003,14 @@ Resources:
                   kept = [d for d in current if d["dataSourceArn"] not in mine]
                   if len(kept) != len(current):
                       os_.update_application(id=p["AppId"], dataSources=kept)
-              except os_.exceptions.ResourceNotFoundException:
-                  pass
+              except Exception as e:
+                  if not missing(e):
+                      raise
               try:
                   os_.delete_direct_query_data_source(DataSourceName=dqs_name(p))
-              except os_.exceptions.ResourceNotFoundException:
-                  pass
+              except Exception as e:
+                  if not missing(e):
+                      raise
 
           # CloudFormation waits for this PUT; the URL is presigned without a content type, so the header must be empty.
           def respond(event, status, physical_id, reason):

@@ -50,10 +50,10 @@ Resources:
       Name: !Ref Name
       Type: SEARCH
 
-  # Keeps the metrics if the stack is deleted or the workspace replaced.
+  # Keeps the metrics if the stack is deleted or the workspace replaced, but not after a failed install.
   Workspace:
     Type: AWS::APS::Workspace
-    DeletionPolicy: Retain
+    DeletionPolicy: RetainExceptOnCreate
     UpdateReplacePolicy: Retain
     Properties:
       Alias: !Ref Name
@@ -112,6 +112,19 @@ Resources:
           "Principal":["${Principals}"]}]
         - Principals: !Join ['","', !Split [",", !Ref DataWritePrincipals]]
 
+  # The pipeline's own logs, so a pipeline that never becomes active leaves evidence. Kept on rollback and delete
+  # (empty after 14 days), so the name carries the stack id for a recreated stack. OSIS needs the /aws/vendedlogs/
+  # prefix: the account's shared vended-logs resource policy then covers delivery.
+  PipelineLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub
+        - /aws/vendedlogs/OpenSearchIngestion/${Name}/${Id}
+        - Id: !Select [2, !Split ["/", !Ref AWS::StackId]]
+      RetentionInDays: 14
+
   # Rendered from the official installer's serverless pipeline (aws/cli-installer/src/render.mjs, renderPipeline).
   Pipeline:
     Type: AWS::OSIS::Pipeline
@@ -121,6 +134,10 @@ Resources:
       MinUnits: !Ref MinUnits
       MaxUnits: !Ref MaxUnits
       PipelineRoleArn: !GetAtt PipelineRole.Arn
+      LogPublishingOptions:
+        IsLoggingEnabled: true
+        CloudWatchLogDestination:
+          LogGroup: !Ref PipelineLogGroup
       PipelineConfigurationBody: !Sub |
         version: '2'
         extension:

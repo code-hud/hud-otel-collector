@@ -26,18 +26,30 @@ body = yaml.safe_load(r["Pipeline"]["Properties"]["PipelineConfigurationBody"])
 assert {"otlp-pipeline", "otel-logs-pipeline", "service-map-pipeline", "otel-metrics-pipeline"} <= body.keys(), body.keys()
 r = yaml.safe_load(open("/d/aws/parts/observability-attach.yaml"))["Resources"]
 import sys, types
+class ClientError(Exception):
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.response = {"Error": {"Code": code, "Message": message}}
+gone = lambda: ClientError("ValidationException", "Data source not found")
 class Fake:
     class exceptions:
-        ResourceNotFoundException = ResourceAlreadyExistsException = type("E", (Exception,), {})
+        ResourceAlreadyExistsException = type("E", (Exception,), {})
     ds = [{"dataSourceArn": "theirs", "iamRoleForDataSourceArn": "role"}]
     dqs = None
+    app_gone = False
     def add_direct_query_data_source(self, DataSourceName, **_): Fake.dqs = "dqs:" + DataSourceName
     def get_direct_query_data_source(self, DataSourceName):
-        if not Fake.dqs: raise Fake.exceptions.ResourceNotFoundException()
+        if not Fake.dqs: raise gone()
         return {"DataSourceArn": Fake.dqs}
-    def delete_direct_query_data_source(self, DataSourceName): Fake.dqs = None
-    def get_application(self, id): return {"dataSources": [dict(d) for d in Fake.ds]}
-    def update_application(self, id, dataSources): Fake.ds = dataSources
+    def delete_direct_query_data_source(self, DataSourceName):
+        if not Fake.dqs: raise gone()
+        Fake.dqs = None
+    def get_application(self, id):
+        if Fake.app_gone: raise ClientError("ResourceNotFoundException", "Application not found")
+        return {"dataSources": [dict(d) for d in Fake.ds]}
+    def update_application(self, id, dataSources):
+        if Fake.app_gone: raise ClientError("ResourceNotFoundException", "Application not found")
+        Fake.ds = dataSources
 sys.modules["boto3"] = types.SimpleNamespace(client=lambda _: Fake())
 import json, urllib.request
 sent = []
@@ -49,23 +61,38 @@ def call(fn, kind, p, ok=True):
     assert method == "PUT" and ctype == "" and body["Status"] == ("SUCCESS" if ok else "FAILED") and body["RequestId"] == "r", body
     assert ok or body["Reason"], body
     assert not sent, sent
+theirs = [{"dataSourceArn": "theirs", "iamRoleForDataSourceArn": "role"}]
 ns = {}
 exec(r["AttachFunction"]["Properties"]["Code"]["ZipFile"], ns)
 p = {"AppId": "app1", "CollectionArn": "coll", "WorkspaceArn": "ws", "DirectQueryRoleArn": "r", "DataSourceName": "hud_x_hud_prometheus"}
+call(ns["handler"], "Delete", p)  # nothing was ever attached
+assert Fake.ds == theirs and Fake.dqs is None, Fake.ds
 for _ in range(2): call(ns["handler"], "Create", p)
 assert [d["dataSourceArn"] for d in Fake.ds] == ["theirs", "coll", "dqs:hud_x_hud_prometheus_app1"], Fake.ds
-assert Fake.ds[0] == {"dataSourceArn": "theirs", "iamRoleForDataSourceArn": "role"}, Fake.ds
+assert Fake.ds[0] == theirs[0], Fake.ds
 call(ns["handler"], "Delete", p)
-assert Fake.ds == [{"dataSourceArn": "theirs", "iamRoleForDataSourceArn": "role"}] and Fake.dqs is None, Fake.ds
+assert Fake.ds == theirs and Fake.dqs is None, Fake.ds
+call(ns["handler"], "Delete", p)  # already detached
+Fake.app_gone = True
+call(ns["handler"], "Delete", p)  # the app itself was deleted
+Fake.app_gone = False
+real_get_dqs, real_get_app = Fake.get_direct_query_data_source, Fake.get_application
+Fake.get_direct_query_data_source = lambda self, DataSourceName: (_ for _ in ()).throw(ClientError("AccessDeniedException", "no"))
+call(ns["handler"], "Delete", p, ok=False)  # other errors still fail
 Fake.get_application = lambda self, id: 1 / 0
 call(ns["handler"], "Update", p, ok=False)
-# Setup: a failure must still answer CloudFormation (Fake has no list/describe calls Setup needs).
+Fake.get_direct_query_data_source, Fake.get_application = real_get_dqs, real_get_app
+# Setup: a failure must still answer CloudFormation (Fake has no list/describe calls Setup needs), and Delete with
+# nothing left to remove succeeds.
 for m in ("botocore", "botocore.session", "botocore.auth", "botocore.awsrequest"):
     sys.modules[m] = types.SimpleNamespace(session=None, SigV4Auth=None, AWSRequest=None)
 r = yaml.safe_load(open("/d/aws/observability.yaml"))["Resources"]
 ns = {}
 exec(r["SetupFunction"]["Properties"]["Code"]["ZipFile"], ns)
-call(ns["handler"], "Create", {"DataSourceName": "x", "DirectQueryRoleArn": "r", "WorkspaceArn": "ws"}, ok=False)
+sp = {"AppId": "app1", "CollectionArn": "coll", "DataSourceName": "x", "DirectQueryRoleArn": "r", "WorkspaceArn": "ws"}
+Fake.app_gone, Fake.dqs = True, None
+call(ns["handler"], "Create", sp, ok=False)
+call(ns["handler"], "Delete", sp)
 print("ok")
 EOF'
 

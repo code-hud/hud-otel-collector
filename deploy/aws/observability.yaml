@@ -49,7 +49,7 @@ Resources:
       Type: SEARCH
   Workspace:
     Type: AWS::APS::Workspace
-    DeletionPolicy: Retain
+    DeletionPolicy: RetainExceptOnCreate
     UpdateReplacePolicy: Retain
     Properties:
       Alias: !Ref 'Name'
@@ -95,6 +95,19 @@ Resources:
         - !Split
           - ','
           - !Ref 'DataWritePrincipals'
+  PipelineLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub
+      - /aws/vendedlogs/OpenSearchIngestion/${Name}/${Id}
+      - Id: !Select
+        - 2
+        - !Split
+          - /
+          - !Ref 'AWS::StackId'
+      RetentionInDays: 14
   Pipeline:
     Type: AWS::OSIS::Pipeline
     DependsOn: DataAccessPolicy
@@ -103,6 +116,10 @@ Resources:
       MinUnits: !Ref 'MinUnits'
       MaxUnits: !Ref 'MaxUnits'
       PipelineRoleArn: !GetAtt 'PipelineRole.Arn'
+      LogPublishingOptions:
+        IsLoggingEnabled: true
+        CloudWatchLogDestination:
+          LogGroup: !Ref 'PipelineLogGroup'
       PipelineConfigurationBody: !Sub |
         version: '2'
         extension:
