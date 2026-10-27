@@ -83,7 +83,7 @@ Parameters:
     AllowedValues:
     - merge
     - convert
-    Description: merge = function metrics (code.function.*) from all your app instances add into one series per collector task; flow and process metrics stay one series per app instance. convert = one series per app instance for every metric.
+    Description: merge = function metrics (code.function.*) from all your app instances add into one series per collector task and deployment, labelled with deployment_id, telemetry_sdk_version and the environment, namespace and cloud; for totals across deployments use sum without (deployment_id, telemetry_sdk_version). Flow and process metrics stay one series per app instance. convert = one series per app instance for every metric.
   ExportInterval:
     Type: Number
     Default: 300
@@ -487,7 +487,14 @@ Resources:
                 metric_statements:
                   - context: resource
                     statements:
-                      - keep_keys(attributes, ["service.name", "service.namespace", "deployment.environment.name", "deployment.id", "k8s.namespace.name", "cloud.provider", "cloud.region", "telemetry.sdk.name", "telemetry.sdk.language", "telemetry.sdk.version", "hud.identity.version"])
+                      - keep_keys(attributes, ["service.name", "service.namespace", "deployment.environment.name", "deployment.id", "k8s.namespace.name", "cloud.provider", "cloud.region", "telemetry.sdk.version", "hud.identity.version"])
+                  - context: datapoint
+                    statements:
+                      - merge_maps(attributes, resource.attributes, "insert")
+                      - delete_matching_keys(attributes, "^service\\.(name|namespace)$")
+                  - context: resource
+                    statements:
+                      - keep_keys(attributes, ["service.name", "service.namespace"])
                       - set(attributes["service.instance.id"], "${!env:HOSTNAME}")
               transform/restamp:
                 metric_statements:

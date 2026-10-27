@@ -35,7 +35,7 @@ Parameters:
     Type: String
     Default: merge
     AllowedValues: [merge, convert]
-    Description: merge = function metrics (code.function.*) from all your app instances add into one series per collector task; flow and process metrics stay one series per app instance. convert = one series per app instance for every metric.
+    Description: merge = function metrics (code.function.*) from all your app instances add into one series per collector task and deployment, labelled with deployment_id, telemetry_sdk_version and the environment, namespace and cloud; for totals across deployments use sum without (deployment_id, telemetry_sdk_version). Flow and process metrics stay one series per app instance. convert = one series per app instance for every metric.
   ExportInterval:
     Type: Number
     Default: 300
@@ -209,7 +209,10 @@ Resources:
                 - https://aps-workspaces.${AWS::Region}.amazonaws.com/workspaces/${Ws}/api/v1/remote_write
                 - Ws: !If [CreateAmp, !GetAtt AmpWorkspace.WorkspaceId, !Ref AmpWorkspaceId]
             # merge: function metrics (code.function.*) lose their per-pod resource attributes and take this task's
-            # hostname, so all app pods add into one series per task. Everything else (flow, process) stays per pod.
+            # hostname, so all app pods add into one series per task. The kept attributes move onto the data points:
+            # remote write labels only job and instance from the resource, so a stream's identity must be its label
+            # set or streams that differ only in, say, deployment.id would collide in one series. telemetry.sdk.name
+            # and .language are dropped: the Hud SDK sets them to constants. Everything else (flow, process) stays per pod.
             # batch serializes concurrent requests; without it, re-stamped points can reach delta_to_cumulative out of order and be dropped.
             - Name: HUD_OTELCOL_CONFIG
               Value: !Sub
@@ -242,7 +245,14 @@ Resources:
                       metric_statements:
                         - context: resource
                           statements:
-                            - keep_keys(attributes, ["service.name", "service.namespace", "deployment.environment.name", "deployment.id", "k8s.namespace.name", "cloud.provider", "cloud.region", "telemetry.sdk.name", "telemetry.sdk.language", "telemetry.sdk.version", "hud.identity.version"])
+                            - keep_keys(attributes, ["service.name", "service.namespace", "deployment.environment.name", "deployment.id", "k8s.namespace.name", "cloud.provider", "cloud.region", "telemetry.sdk.version", "hud.identity.version"])
+                        - context: datapoint
+                          statements:
+                            - merge_maps(attributes, resource.attributes, "insert")
+                            - delete_matching_keys(attributes, "^service\\.(name|namespace)$")
+                        - context: resource
+                          statements:
+                            - keep_keys(attributes, ["service.name", "service.namespace"])
                             - set(attributes["service.instance.id"], "${!env:HOSTNAME}")
                     transform/restamp:
                       metric_statements:
