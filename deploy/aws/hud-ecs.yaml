@@ -67,9 +67,10 @@ Parameters:
     Description: Your existing ECS cluster to run the collector in.
   VpcId:
     Type: AWS::EC2::VPC::Id
+    Description: The VPC the collector runs in. The subnets below must be in this VPC.
   SubnetIds:
     Type: List<AWS::EC2::Subnet::Id>
-    Description: Public subnets (with a route to an internet gateway) for the collector tasks, so they can pull the image and reach AMP and OpenSearch Ingestion. For private subnets with a NAT gateway, set AssignPublicIp to DISABLED.
+    Description: Public subnets (with a route to an internet gateway) for the collector tasks, so they can pull the image and reach AMP and OpenSearch Ingestion. For private subnets with a NAT gateway, set AssignPublicIp to DISABLED. They must be in the chosen VPC.
   AssignPublicIp:
     Type: String
     Default: ENABLED
@@ -596,6 +597,11 @@ Resources:
         FromPort: 4318
         ToPort: 4318
         CidrIp: !Ref 'AllowedCidr'
+      Tags:
+      - Key: hud:first-subnet
+        Value: !Select
+        - 0
+        - !Ref 'SubnetIds'
   Namespace:
     Type: AWS::ServiceDiscovery::PrivateDnsNamespace
     Properties:
