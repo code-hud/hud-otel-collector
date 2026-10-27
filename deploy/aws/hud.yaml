@@ -710,7 +710,7 @@ Resources:
       Code:
         ZipFile: |
           import json, time, urllib.error, urllib.parse, urllib.request
-          import boto3, botocore.session, cfnresponse
+          import boto3, botocore.session
           from botocore.auth import SigV4Auth
           from botocore.awsrequest import AWSRequest
 
@@ -823,22 +823,32 @@ Resources:
               except Exception as e:
                   print("delete data source:", e)
 
+          # CloudFormation waits for this PUT; the URL is presigned without a content type, so the header must be empty.
+          def respond(event, status, data, reason):
+              body = json.dumps({"Status": status, "Reason": reason, "PhysicalResourceId": "setup", "StackId": event["StackId"],
+                                 "RequestId": event["RequestId"], "LogicalResourceId": event["LogicalResourceId"], "Data": data}).encode()
+              urllib.request.urlopen(urllib.request.Request(event["ResponseURL"], data=body, method="PUT", headers={"Content-Type": ""}), timeout=30)
+
           def handler(event, context):
               p = event["ResourceProperties"]
+              status, data, reason = "FAILED", {}, "see the function's CloudWatch logs"
               try:
                   if event["RequestType"] == "Delete":
                       teardown(p)
-                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, "setup")
                   else:
-                      cfnresponse.send(event, context, cfnresponse.SUCCESS, setup(p), "setup")
+                      data = setup(p)
+                  status, reason = "SUCCESS", ""
               except Exception as e:
                   print("failed:", repr(e))
-                  cfnresponse.send(event, context, cfnresponse.FAILED, {}, "setup", reason=str(e)[:200])
+                  reason = str(e)[:200]
+              finally:
+                  respond(event, status, data, reason)
   Setup:
     Condition: NewUi
     Type: AWS::CloudFormation::CustomResource
     Properties:
       ServiceToken: !GetAtt 'SetupFunction.Arn'
+      ServiceTimeout: 900
       AppId: !GetAtt 'Application.Id'
       CollectionArn: !GetAtt 'Collection.Arn'
       WorkspaceArn: !GetAtt 'Workspace.Arn'
@@ -921,7 +931,8 @@ Resources:
       Role: !GetAtt 'AttachRole.Arn'
       Code:
         ZipFile: |
-          import boto3, cfnresponse
+          import json, urllib.request
+          import boto3
 
           # Per app, so moving the stack to another app can't delete the new app's data source.
           def dqs_name(p):
@@ -963,23 +974,33 @@ Resources:
               except os_.exceptions.ResourceNotFoundException:
                   pass
 
+          # CloudFormation waits for this PUT; the URL is presigned without a content type, so the header must be empty.
+          def respond(event, status, physical_id, reason):
+              body = json.dumps({"Status": status, "Reason": reason, "PhysicalResourceId": physical_id, "StackId": event["StackId"],
+                                 "RequestId": event["RequestId"], "LogicalResourceId": event["LogicalResourceId"], "Data": {}}).encode()
+              urllib.request.urlopen(urllib.request.Request(event["ResponseURL"], data=body, method="PUT", headers={"Content-Type": ""}), timeout=30)
+
           # The physical id is the app id: pointing the stack at another app makes CloudFormation delete (detach) the old one.
           def handler(event, context):
               p = event["ResourceProperties"]
+              status, physical_id, reason = "FAILED", event.get("PhysicalResourceId", p["AppId"]), "see the function's CloudWatch logs"
               try:
                   if event["RequestType"] == "Delete":
                       detach(p)
                   else:
                       attach(p)
-                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, p["AppId"])
+                  status, physical_id, reason = "SUCCESS", p["AppId"], ""
               except Exception as e:
                   print("failed:", repr(e))
-                  cfnresponse.send(event, context, cfnresponse.FAILED, {}, event.get("PhysicalResourceId", p["AppId"]), reason=str(e)[:200])
+                  reason = str(e)[:200]
+              finally:
+                  respond(event, status, physical_id, reason)
   Attach:
     Type: AWS::CloudFormation::CustomResource
     Condition: AttachToUi
     Properties:
       ServiceToken: !GetAtt 'AttachFunction.Arn'
+      ServiceTimeout: 300
       AppId: !Ref 'ExistingUiAppId'
       CollectionArn: !GetAtt 'Collection.Arn'
       WorkspaceArn: !GetAtt 'Workspace.Arn'

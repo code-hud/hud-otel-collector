@@ -24,7 +24,6 @@ yaml.SafeLoader.add_multi_constructor("!", lambda l, s, n: l.construct_sequence(
 r = yaml.safe_load(open("/d/aws/observability.yaml"))["Resources"]
 body = yaml.safe_load(r["Pipeline"]["Properties"]["PipelineConfigurationBody"])
 assert {"otlp-pipeline", "otel-logs-pipeline", "service-map-pipeline", "otel-metrics-pipeline"} <= body.keys(), body.keys()
-compile(r["SetupFunction"]["Properties"]["Code"]["ZipFile"], "index.py", "exec")
 r = yaml.safe_load(open("/d/aws/parts/observability-attach.yaml"))["Resources"]
 import sys, types
 class Fake:
@@ -40,15 +39,33 @@ class Fake:
     def get_application(self, id): return {"dataSources": [dict(d) for d in Fake.ds]}
     def update_application(self, id, dataSources): Fake.ds = dataSources
 sys.modules["boto3"] = types.SimpleNamespace(client=lambda _: Fake())
-sys.modules["cfnresponse"] = types.SimpleNamespace(SUCCESS="S", FAILED="F", send=lambda *a, **k: print(a[2], k))
+import json, urllib.request
+sent = []
+urllib.request.urlopen = lambda req, timeout: sent.append((req.get_method(), req.get_header("Content-type"), json.loads(req.data)))
+def call(fn, kind, p, ok=True):
+    ev = {"RequestType": kind, "ResourceProperties": p, "ResponseURL": "https://s3/presigned", "StackId": "s", "RequestId": "r", "LogicalResourceId": "l"}
+    fn(ev, None)
+    method, ctype, body = sent.pop()
+    assert method == "PUT" and ctype == "" and body["Status"] == ("SUCCESS" if ok else "FAILED") and body["RequestId"] == "r", body
+    assert ok or body["Reason"], body
+    assert not sent, sent
 ns = {}
 exec(r["AttachFunction"]["Properties"]["Code"]["ZipFile"], ns)
 p = {"AppId": "app1", "CollectionArn": "coll", "WorkspaceArn": "ws", "DirectQueryRoleArn": "r", "DataSourceName": "hud_x_hud_prometheus"}
-for _ in range(2): ns["handler"]({"RequestType": "Create", "ResourceProperties": p}, None)
+for _ in range(2): call(ns["handler"], "Create", p)
 assert [d["dataSourceArn"] for d in Fake.ds] == ["theirs", "coll", "dqs:hud_x_hud_prometheus_app1"], Fake.ds
 assert Fake.ds[0] == {"dataSourceArn": "theirs", "iamRoleForDataSourceArn": "role"}, Fake.ds
-ns["handler"]({"RequestType": "Delete", "ResourceProperties": p}, None)
+call(ns["handler"], "Delete", p)
 assert Fake.ds == [{"dataSourceArn": "theirs", "iamRoleForDataSourceArn": "role"}] and Fake.dqs is None, Fake.ds
+Fake.get_application = lambda self, id: 1 / 0
+call(ns["handler"], "Update", p, ok=False)
+# Setup: a failure must still answer CloudFormation (Fake has no list/describe calls Setup needs).
+for m in ("botocore", "botocore.session", "botocore.auth", "botocore.awsrequest"):
+    sys.modules[m] = types.SimpleNamespace(session=None, SigV4Auth=None, AWSRequest=None)
+r = yaml.safe_load(open("/d/aws/observability.yaml"))["Resources"]
+ns = {}
+exec(r["SetupFunction"]["Properties"]["Code"]["ZipFile"], ns)
+call(ns["handler"], "Create", {"DataSourceName": "x", "DirectQueryRoleArn": "r", "WorkspaceArn": "ws"}, ok=False)
 print("ok")
 EOF'
 
