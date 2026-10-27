@@ -8,34 +8,34 @@ AMP workspace. Commands below run from the repository root.
 
 ## Next to your Observability Stack
 
-If you already run the [Observability Stack](https://github.com/opensearch-project/observability-stack),
-`deploy/aws/unified-ecs-existing-ui.yaml` gives Hud its own data resources next to yours, in one stack:
+If you already run the [Observability Stack](https://github.com/opensearch-project/observability-stack), both
+one-stack templates (`deploy/aws/hud-ecs.yaml` and `deploy/aws/hud.yaml`) give Hud its own data resources next to
+yours:
 - an OpenSearch Serverless collection, an OSIS pipeline and an AMP workspace, the same as the Observability
-  Stack's but without its OpenSearch UI app and dashboards. Their names are `NamePrefix` (default `hud`) plus a
-  suffix unique to the stack, e.g. `hud-1a2b3c4d`, so they can't clash with yours;
-- the collector on ECS Fargate, writing to them;
+  Stack's. Their names are `NamePrefix` (default `hud`) plus a suffix unique to the stack, e.g. `hud-1a2b3c4d`, so
+  they can't clash with yours;
+- the collector on ECS Fargate (`hud-ecs.yaml`) or its EKS role (`hud.yaml`), writing to them;
 - the read-only [Hud access](README.md#hud-access) role.
 
 Your collection, pipeline, workspace and UI app aren't changed, except as below.
 
 ```sh
-aws cloudformation deploy --stack-name hud --template-file deploy/aws/unified-ecs-existing-ui.yaml \
+aws cloudformation deploy --stack-name hud --template-file deploy/aws/hud-ecs.yaml \
   --capabilities CAPABILITY_IAM --parameter-overrides \
   ClusterName=<cluster> VpcId=<vpc> SubnetIds=<subnet-a>,<subnet-b> AllowedCidr=<vpc cidr> \
-  ExternalId=<external id from Hud> ExistingUiAppId=<your OpenSearch UI app id, optional>
+  ExternalId=<external id from Hud> ExistingUiAppId=<your OpenSearch UI app id>
 ```
 
-[Launch in CloudFormation](https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/quickcreate?templateURL=https%3A%2F%2Fhud-cfn-test-736129612463.s3.amazonaws.com%2Ftest%2Funified-ecs-existing-ui.yaml&stackName=hud) (template: `deploy/aws/unified-ecs-existing-ui.yaml`)
-
-**Your OpenSearch UI app (optional).** Set `ExistingUiAppId` to your app's id (`aws opensearch list-applications`)
+**Your OpenSearch UI app.** Set `ExistingUiAppId` to your app's id (`aws opensearch list-applications`)
 to add Hud's collection and AMP workspace (as a PromQL data source) to it. The stack reads your app's data sources
 and adds its two; it never removes yours. Deleting the stack, or changing `ExistingUiAppId`, removes only those
-two. No workspace is created in your app: to use Hud's data in one of your workspaces, associate the two data
+two. Setting it on a stack that created its own UI app deletes that app (and clearing it creates one). No
+workspace is created in your app: to use Hud's data in one of your workspaces, associate the two data
 sources with it in the workspace's settings. Anyone in your account can read Hud's collection
 ([Who can read the collection](README.md#who-can-read-the-collection)).
 
 Then point your apps at the stack's `OtlpEndpoint` and `HudExporter` outputs, as in the
-[one-stack deploy](README.md#ecs-fargate), and give Hud the `HudRoleArn`, `CollectionName` and
+[one-stack deploy](README.md#ecs-fargate-hud-ecsyaml), and give Hud the `HudRoleArn`, `CollectionName` and
 `CollectionEndpoint` outputs.
 
 ## Separate stacks
@@ -65,7 +65,7 @@ With an existing stack (from the installer or built some other way), use its AMP
 OTLP logs URL of its OSIS pipeline (the pipeline must accept OTLP logs). The installer names both after the
 pipeline: `aws amp list-workspaces --alias <pipeline>` and `https://<IngestEndpointUrls[0]>/<pipeline>/v1/logs`.
 
-**2. Collector.** Deploy into public subnets, as in the [one-stack deploy](README.md#ecs-fargate), or see
+**2. Collector.** Deploy into public subnets, as in the [one-stack deploy](README.md#ecs-fargate-hud-ecsyaml), or see
 [Private subnets](#private-subnets). The task
 pulls the public `ghcr.io/code-hud/hud-otel-collector` image; to use a copy in your account's ECR, pass `Image`.
 

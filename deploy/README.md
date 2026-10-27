@@ -21,85 +21,118 @@ Both take the deltas the Hud SDK sends; point your apps at the collector with `H
 > **Test links.** The "Launch in CloudFormation" links below open the console in `us-east-1` with templates
 > from a temporary test bucket. They will move to the real public bucket later.
 
-Your launch link comes from Hud's onboarding, with the `ExternalId` Hud generated for you already filled in; don't
-change it. For testing, `scripts/quick-create-link.sh` prints a new ExternalId and the links of both one-stack
-templates with it prefilled (the bare links below leave it empty).
+## One stack
 
-## ECS Fargate
+Hud's onboarding gives you one "Launch in CloudFormation" button. It picks the template from your answer to
+"Where do you run your services?" and prefills the `ExternalId` Hud generated for you; don't change it:
 
-`deploy/aws/unified-ecs.yaml` creates everything in one stack (~10 minutes):
-- the Observability Stack: the same resources as the official serverless
+| Your services run on | Template | What runs the collector |
+|---|---|---|
+| ECS | `deploy/aws/hud-ecs.yaml` | the stack, on ECS Fargate in your cluster and VPC |
+| EKS | `deploy/aws/hud.yaml` (`CollectorPlatform=EKS`) | you, with the Helm chart; the stack creates its IAM role |
+| anything else | `deploy/aws/hud.yaml` (`CollectorPlatform=None`) | you, with your own credentials |
+
+`hud-ecs.yaml` is `hud.yaml` plus the collector on ECS: only it asks for a VPC and subnets. Both create, in one
+stack (~10 minutes):
+- the Observability Stack's data: the same resources as the official serverless
   [installer](https://github.com/opensearch-project/observability-stack/blob/main/aws/cli-installer/README.md),
-  i.e. OpenSearch Serverless, an OSIS pipeline (logs, traces and service map to OpenSearch, metrics to AMP), an
-  AMP workspace, and the OpenSearch UI with an Observability workspace and AMP as a PromQL data source;
-- the collector as a service in your existing ECS cluster and VPC, reachable at `http://hud-collector.hud.local:4318`
-  (private DNS), writing metrics to that AMP workspace and investigations to that pipeline. Defaults: 1 vCPU,
-  4 GB, ARM64, 1 task;
+  i.e. OpenSearch Serverless, an OSIS pipeline (logs, traces and service map to OpenSearch, metrics to AMP) and an
+  AMP workspace. Their names are `NamePrefix` (default `hud`) plus a suffix unique to the stack, e.g.
+  `hud-1a2b3c4d`, so they can't clash with an Observability Stack you already run;
+- an OpenSearch UI app with an Observability workspace and AMP as a PromQL data source, or, if you set
+  `ExistingUiAppId`, Hud's collection and AMP workspace added to your app instead (see
+  [Already running the Observability Stack?](#already-running-the-observability-stack));
 - a read-only role Hud can assume to query that data (see [Hud access](#hud-access)).
+
+For testing, `scripts/quick-create-link.sh` prints a new ExternalId and the links of both templates with it
+prefilled (the bare links below leave it empty). The AMP workspace is kept if the stack is deleted, but not when
+the install itself fails. The OSIS pipeline logs to `/aws/vendedlogs/OpenSearchIngestion/<name>/<stack id>` (14
+days), which is also kept, so a pipeline that never becomes active leaves evidence. Turning those logs on needs
+the deploying principal to have CloudWatch Logs delivery permissions (`logs:CreateLogDelivery`,
+`logs:PutResourcePolicy`, `logs:DescribeResourcePolicies`, `logs:DescribeLogGroups`), which administrators have.
+
+The templates' Rules (e.g. at least one subnet, subnets in the chosen VPC, `ClusterName` with EKS) are checked
+when the stack is created, as the console's quick-create does: a bad value rolls the stack back at once with the
+Rule's message. They aren't checked when a change set is created (`aws cloudformation deploy` uses change sets), so
+there a bad value fails later, at the resource that uses it.
+
+### ECS Fargate: `hud-ecs.yaml`
+
+The collector runs as a service in your existing ECS cluster and VPC, reachable at
+`http://hud-collector.hud.local:4318` (private DNS), writing metrics to the stack's AMP workspace and
+investigations to its pipeline. Defaults: 1 vCPU, 4 GB, ARM64, 1 task.
 
 Deploy the collector into public subnets (with a route to an internet gateway). The tasks get public IPs
 (`AssignPublicIp=ENABLED`, the default) to pull the image and reach AMP and OSIS, but the security group only
 opens port 4318 only to `AllowedCidr` (your VPC CIDR; `0.0.0.0/0` is rejected), so nothing is reachable from the
 internet. For private subnets with a NAT gateway, see [alternatives](alternatives.md#private-subnets). The task pulls the public
-`ghcr.io/code-hud/hud-otel-collector` image; to use a copy in your account's ECR, pass `Image`. The AMP
-workspace is kept if the stack is deleted.
+`ghcr.io/code-hud/hud-otel-collector` image; to use a copy in your account's ECR, pass `Image`.
 
 ```sh
-aws cloudformation deploy --stack-name hud --template-file deploy/aws/unified-ecs.yaml \
+aws cloudformation deploy --stack-name hud --template-file deploy/aws/hud-ecs.yaml \
   --capabilities CAPABILITY_IAM --parameter-overrides \
   ClusterName=<cluster> VpcId=<vpc> SubnetIds=<subnet-a>,<subnet-b> AllowedCidr=<vpc cidr> \
   ExternalId=<external id from Hud>
 ```
 
-[Launch in CloudFormation](https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/quickcreate?templateURL=https%3A%2F%2Fhud-cfn-test-736129612463.s3.amazonaws.com%2Ftest%2Funified-ecs.yaml&stackName=hud) (template: `deploy/aws/unified-ecs.yaml`)
+[Launch in CloudFormation](https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/quickcreate?templateURL=https%3A%2F%2Fhud-cfn-test-736129612463.s3.amazonaws.com%2Ftest%2Fhud-ecs.yaml&stackName=hud) (template: `deploy/aws/hud-ecs.yaml`)
 
 **Your apps.** Set `HUD_OTLP_ENDPOINT` and `HUD_EXPORTER` in your apps to the stack's `OtlpEndpoint` and
 `HudExporter` outputs. Metrics show up in the OpenSearch UI (`DashboardUrl` output) through its AMP data
 source (PromQL), and investigations in its logs, for anyone in your account (see
 [Who can read the collection](#who-can-read-the-collection)).
 
-### Already running the observability stack?
+### EKS or your own collector: `hud.yaml`
 
-`deploy/aws/unified-ecs-existing-ui.yaml` leaves yours alone. It creates Hud's own collection, pipeline and AMP
-workspace next to yours, with no UI app, plus the collector and the Hud access role. Pass `ExistingUiAppId` to
-add Hud's data to your OpenSearch UI app (details in
-[alternatives](alternatives.md#next-to-your-observability-stack)):
+With `CollectorPlatform=EKS` the stack also creates the collector's IAM role, linked to the `hud/hud-collector`
+service account with EKS Pod Identity (default) or IRSA (`AuthMode=IRSA OidcProvider=<issuer without https://>`).
+The EKS fields are grouped as "EKS only"; with `None`, leave `ClusterName` empty (a rule enforces it). Then install
+the official chart with `deploy/helm/values.yaml`:
 
 ```sh
-aws cloudformation deploy --stack-name hud --template-file deploy/aws/unified-ecs-existing-ui.yaml \
+aws cloudformation deploy --stack-name hud --template-file deploy/aws/hud.yaml \
   --capabilities CAPABILITY_IAM --parameter-overrides \
-  ClusterName=<cluster> VpcId=<vpc> SubnetIds=<subnet-a>,<subnet-b> AllowedCidr=<vpc cidr> \
-  ExternalId=<external id from Hud> ExistingUiAppId=<your OpenSearch UI app id, optional>
-```
-
-[Launch in CloudFormation](https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/quickcreate?templateURL=https%3A%2F%2Fhud-cfn-test-736129612463.s3.amazonaws.com%2Ftest%2Funified-ecs-existing-ui.yaml&stackName=hud) (template: `deploy/aws/unified-ecs-existing-ui.yaml`)
-
-For separate stacks, or an AMP workspace you already have, see [Deploying with existing resources](alternatives.md).
-
-`observability.yaml`, `unified-ecs.yaml` and `unified-ecs-existing-ui.yaml` are generated from the templates in
-`deploy/aws/parts/`, `ecs-fargate.yaml` and `hud-access.yaml`: edit those, then run `scripts/unify.py`.
-
-## EKS
-
-`deploy/aws/eks-iam.yaml` creates the IAM role, linked to the `hud/hud-collector` service account with
-EKS Pod Identity (default) or IRSA (`AuthMode=IRSA OidcProvider=<issuer without https://>`). Then install the
-official chart with `deploy/helm/values.yaml`:
-
-```sh
-aws cloudformation deploy --stack-name hud-collector-iam --template-file deploy/aws/eks-iam.yaml \
-  --capabilities CAPABILITY_IAM --parameter-overrides ClusterName=<cluster>
+  CollectorPlatform=EKS ClusterName=<cluster> ExternalId=<external id from Hud>
 helm install hud opentelemetry-collector --repo https://open-telemetry.github.io/opentelemetry-helm-charts \
   -n hud --create-namespace -f deploy/helm/values.yaml \
   --set-string extraEnvs[0].value=<AmpRemoteWriteUrl output>,extraEnvs[1].value=<region>
 ```
 
-[Launch in CloudFormation](https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/quickcreate?templateURL=https%3A%2F%2Fhud-cfn-test-736129612463.s3.amazonaws.com%2Ftest%2Feks-iam.yaml&stackName=hud-collector-iam) (template: `deploy/aws/eks-iam.yaml`)
+[Launch in CloudFormation](https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/quickcreate?templateURL=https%3A%2F%2Fhud-cfn-test-736129612463.s3.amazonaws.com%2Ftest%2Fhud.yaml&stackName=hud) (template: `deploy/aws/hud.yaml`)
 
 Add `-f deploy/helm/values-convert.yaml` for `convert` mode. With IRSA, also set the service account's
 `eks.amazonaws.com/role-arn` annotation to the `RoleArn` output. Your apps send to `http://hud-collector.hud:4318`.
-To use an existing AMP workspace, pass `AmpWorkspaceId=<ws-...>`. On EKS only metrics are sent; investigations
-aren't sent to OpenSearch yet. To give Hud access, deploy `deploy/aws/hud-access.yaml` with the stack's
-`AmpWorkspaceId` output (see [Hud access](#hud-access)).
+On EKS only metrics are sent; investigations aren't sent to OpenSearch yet.
+
+With `CollectorPlatform=None`, nothing is created for the collector. Point yours at the `AmpRemoteWriteUrl`
+output (metrics, SigV4 service `aps`) and the `OtlpEndpoint` output plus `/v1/logs` (investigations, SigV4
+service `osis`), and give it credentials with `aps:RemoteWrite` on the workspace and `osis:Ingest` on the pipeline.
+
+### Already running the Observability Stack?
+
+Both templates leave yours alone: Hud's collection, pipeline and AMP workspace are created next to yours, with
+unique names. Set `ExistingUiAppId` to your OpenSearch UI app's id to add Hud's data to it instead of creating a
+new app (details in [alternatives](alternatives.md#next-to-your-observability-stack)). For separate stacks, or an
+AMP workspace you already have, see [Deploying with existing resources](alternatives.md).
+
+`observability.yaml`, `hud-ecs.yaml` and `hud.yaml` are generated from the templates in `deploy/aws/parts/`,
+`ecs-fargate.yaml`, `eks-iam.yaml` and `hud-access.yaml`: edit those, then run `scripts/unify.py`.
+
+## EKS role on its own
+
+`deploy/aws/eks-iam.yaml` creates only the collector's IAM role (and an AMP workspace unless you pass
+`AmpWorkspaceId=<ws-...>`), for when the rest is already in place. Install the chart as above with its
+`AmpRemoteWriteUrl` output:
+
+```sh
+aws cloudformation deploy --stack-name hud-collector-iam --template-file deploy/aws/eks-iam.yaml \
+  --capabilities CAPABILITY_IAM --parameter-overrides ClusterName=<cluster>
+```
+
+[Launch in CloudFormation](https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/quickcreate?templateURL=https%3A%2F%2Fhud-cfn-test-736129612463.s3.amazonaws.com%2Ftest%2Feks-iam.yaml&stackName=hud-collector-iam) (template: `deploy/aws/eks-iam.yaml`)
+
+To give Hud access, deploy `deploy/aws/hud-access.yaml` with the stack's `AmpWorkspaceId` output (see
+[Hud access](#hud-access)).
 
 ## Hud access
 

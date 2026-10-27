@@ -6,7 +6,7 @@ Description: >-
 Metadata:
   AWS::CloudFormation::Interface:
     ParameterGroups:
-      - Label: { default: Your OpenSearch UI }
+      - Label: { default: OpenSearch UI (optional) }
         Parameters: [ExistingUiAppId]
 
 Parameters:
@@ -23,7 +23,7 @@ Parameters:
     Type: String
     Default: ""
     AllowedPattern: ^([a-z0-9]{3,30})?$
-    Description: Optional. Id of your OpenSearch UI application to add Hud's collection and AMP workspace to as data sources. Empty to skip.
+    Description: Empty creates a new OpenSearch UI application with an Observability workspace. If you already have one, put its id here (aws opensearch list-applications) to add Hud's collection and AMP workspace to it as data sources instead; your other data sources are kept.
 
 Conditions:
   AttachToUi: !Not [!Equals [!Ref ExistingUiAppId, ""]]
@@ -88,18 +88,26 @@ Resources:
       Role: !GetAtt AttachRole.Arn
       Code:
         ZipFile: |
-          import boto3, cfnresponse
+          import json, urllib.request
+          import boto3
 
           # Per app, so moving the stack to another app can't delete the new app's data source.
           def dqs_name(p):
               return "%s_%s" % (p["DataSourceName"], p["AppId"])
 
+          # Some OpenSearch calls report a missing resource as ValidationException ("Data source not found").
+          def missing(e):
+              err = getattr(e, "response", {}).get("Error", {})
+              return err.get("Code") == "ResourceNotFoundException" or (
+                  err.get("Code") == "ValidationException" and "not found" in err.get("Message", "").lower())
+
           def ours(os_, p):
               arns = [p["CollectionArn"]]
               try:
                   arns.append(os_.get_direct_query_data_source(DataSourceName=dqs_name(p))["DataSourceArn"])
-              except os_.exceptions.ResourceNotFoundException:
-                  pass
+              except Exception as e:
+                  if not missing(e):
+                      raise
               return arns
 
           def attach(p):
@@ -123,31 +131,43 @@ Resources:
                   kept = [d for d in current if d["dataSourceArn"] not in mine]
                   if len(kept) != len(current):
                       os_.update_application(id=p["AppId"], dataSources=kept)
-              except os_.exceptions.ResourceNotFoundException:
-                  pass
+              except Exception as e:
+                  if not missing(e):
+                      raise
               try:
                   os_.delete_direct_query_data_source(DataSourceName=dqs_name(p))
-              except os_.exceptions.ResourceNotFoundException:
-                  pass
+              except Exception as e:
+                  if not missing(e):
+                      raise
+
+          # CloudFormation waits for this PUT; the URL is presigned without a content type, so the header must be empty.
+          def respond(event, status, physical_id, reason):
+              body = json.dumps({"Status": status, "Reason": reason, "PhysicalResourceId": physical_id, "StackId": event["StackId"],
+                                 "RequestId": event["RequestId"], "LogicalResourceId": event["LogicalResourceId"], "Data": {}}).encode()
+              urllib.request.urlopen(urllib.request.Request(event["ResponseURL"], data=body, method="PUT", headers={"Content-Type": ""}), timeout=30)
 
           # The physical id is the app id: pointing the stack at another app makes CloudFormation delete (detach) the old one.
           def handler(event, context):
               p = event["ResourceProperties"]
+              status, physical_id, reason = "FAILED", event.get("PhysicalResourceId", p["AppId"]), "see the function's CloudWatch logs"
               try:
                   if event["RequestType"] == "Delete":
                       detach(p)
                   else:
                       attach(p)
-                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, p["AppId"])
+                  status, physical_id, reason = "SUCCESS", p["AppId"], ""
               except Exception as e:
                   print("failed:", repr(e))
-                  cfnresponse.send(event, context, cfnresponse.FAILED, {}, event.get("PhysicalResourceId", p["AppId"]), reason=str(e)[:200])
+                  reason = str(e)[:200]
+              finally:
+                  respond(event, status, physical_id, reason)
 
   Attach:
     Type: AWS::CloudFormation::CustomResource
     Condition: AttachToUi
     Properties:
       ServiceToken: !GetAtt AttachFunction.Arn
+      ServiceTimeout: 300
       AppId: !Ref ExistingUiAppId
       CollectionArn: !Ref CollectionArn
       WorkspaceArn: !Ref AmpWorkspaceArn
