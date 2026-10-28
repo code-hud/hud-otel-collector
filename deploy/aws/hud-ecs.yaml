@@ -737,6 +737,7 @@ Resources:
                 ${FunctionsPipeline}
                 ${PerPodPipeline}
                 ${LogsPipeline}
+                ${TracesPipeline}
           - FunctionsPipeline: !If
             - Merge
             - 'metrics/functions: {receivers: [otlp], processors: [memory_limiter, filter/functions, batch, transform/merge, transform/restamp, delta_to_cumulative, interval], exporters: [prometheus_remote_write]}'
@@ -747,8 +748,29 @@ Resources:
             - 'metrics: {receivers: [otlp], processors: [memory_limiter, batch, delta_to_cumulative], exporters: [prometheus_remote_write]}'
             OsisAuth: !Sub 'sigv4auth/osis: {region: ''${AWS::Region}'', service: osis}'
             OsisExporter: !Sub
-            - 'otlp_http/osis: {logs_endpoint: ''${OsisLogsUrl}'', auth: {authenticator: sigv4auth/osis}, compression: none}'
-            - OsisLogsUrl: !Sub
+            - 'otlp_http/osis: {logs_endpoint: ''${OsisLogsUrl}'', traces_endpoint: ''${TracesUrl}'', auth: {authenticator: sigv4auth/osis}, compression: none}'
+            - TracesUrl: !Join
+              - /v1/traces
+              - !Split
+                - /v1/logs
+                - !Sub
+                  - https://${Host}/${Name}/v1/logs
+                  - Host: !Select
+                    - 0
+                    - !GetAtt 'Pipeline.IngestEndpointUrls'
+                    Name: !Join
+                    - '-'
+                    - - !Ref 'NamePrefix'
+                      - !Select
+                        - 0
+                        - !Split
+                          - '-'
+                          - !Select
+                            - 2
+                            - !Split
+                              - /
+                              - !Ref 'AWS::StackId'
+              OsisLogsUrl: !Sub
               - https://${Host}/${Name}/v1/logs
               - Host: !Select
                 - 0
@@ -767,10 +789,10 @@ Resources:
                           - !Ref 'AWS::StackId'
             Extensions: '[health_check, sigv4auth, sigv4auth/osis]'
             LogsPipeline: 'logs: {receivers: [otlp], processors: [memory_limiter, batch], exporters: [otlp_http/osis]}'
+            TracesPipeline: 'traces: {receivers: [otlp], processors: [memory_limiter, batch], exporters: [otlp_http/osis]}'
   Service:
     Type: AWS::ECS::Service
     Properties:
-      ServiceName: hud-collector
       Cluster: !Ref 'ClusterName'
       LaunchType: FARGATE
       DesiredCount: !Ref 'DesiredCount'
