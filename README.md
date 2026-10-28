@@ -44,7 +44,8 @@ sha256sum --ignore-missing -c checksums.txt
 
 ## Deploying to your AWS account
 
-See [deploy/README.md](deploy/README.md): one stack on ECS Fargate, or EKS with Helm.
+The CloudFormation templates and Helm values live in
+[hud-o11y-resources](https://github.com/code-hud/hud-o11y-resources/blob/main/deploy/README.md).
 
 ## Local development
 
@@ -54,7 +55,7 @@ Only Docker is required; Go runs in a container.
 make build   # OCB generates and compiles _build/hud-otelcol (linux, Docker host arch)
 make image   # hud-otelcol:dev
 make smoke   # five fake pods send deltas concurrently; expects one merged Prometheus series with the summed total
-./test/deploy.sh  # cfn-lint, checks the Observability Stack pipeline and setup code, validates every rendered collector config
+./test/deploy.sh  # validates the collector configs hud-o11y-resources renders (copies in test/configs/)
 ```
 
 ## Updating upstream

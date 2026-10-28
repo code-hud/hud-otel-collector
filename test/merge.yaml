@@ -1,4 +1,4 @@
-# The merge-mode pipelines of deploy/, exported to a local Prometheus: function metrics merge
+# The merge-mode pipelines of hud-o11y-resources' deploy configs, exported to a local Prometheus: function metrics merge
 # across pods, everything else stays per pod.
 receivers:
   otlp:

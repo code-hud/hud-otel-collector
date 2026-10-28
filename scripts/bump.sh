@@ -18,6 +18,4 @@ awk -v ver="${tag#v}" '
   { print }
 ' <(echo "$upstream") manifest.yaml >"$tmp"
 mv "$tmp" manifest.yaml
-sed -i.bak -E "s/(hud-otel-collector:)[0-9][^ \"]*/\1${tag#v}/; s/^(  tag: \")[^\"]*/\1${tag#v}/" \
-  deploy/aws/ecs-fargate.yaml deploy/helm/values.yaml && rm deploy/aws/*.bak deploy/helm/*.bak
 echo "$tag"

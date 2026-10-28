@@ -60,3 +60,14 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # hud-o11y-resources opens a PR bumping its deploy configs to the new image version.
+      - name: Notify hud-o11y-resources
+        if: steps.tag.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.O11Y_RESOURCES_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then echo "::warning::O11Y_RESOURCES_TOKEN is not set, skipping"; exit 0; fi
+          version=$(git describe --tags --exact-match)
+          gh api repos/code-hud/hud-o11y-resources/dispatches -f event_type=collector-release \
+            -f "client_payload[version]=${version#v}"
