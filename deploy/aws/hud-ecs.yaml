@@ -123,9 +123,9 @@ Parameters:
     Description: Public image, or a copy in your account's ECR.
   DnsNamespace:
     Type: String
-    Default: hud.local
+    Default: hud.internal
     AllowedPattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$
-    Description: Keep the default unless your VPC already has a private DNS zone with this name (for example another Hud stack). Your apps send to hud-collector.<name>:4318. Lowercase letters, digits, hyphens and dots, e.g. hud2.local; not a domain you use publicly.
+    Description: Private DNS namespace for the collector. A VPC can hold only one namespace with a given name, so a second Hud install in the same VPC needs a different value, e.g. hud2.internal. Your apps send to hud-collector.<name>:4318 (the OtlpEndpoint output). Lowercase letters, digits, hyphens and dots; not a domain you use publicly.
   ExternalId:
     Type: String
     MinLength: 2
