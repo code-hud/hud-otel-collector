@@ -37,7 +37,8 @@ stack (~10 minutes):
 - the Observability Stack's data: the same resources as the official serverless
   [installer](https://github.com/opensearch-project/observability-stack/blob/main/aws/cli-installer/README.md),
   i.e. OpenSearch Serverless, an OSIS pipeline (logs, traces and service map to OpenSearch, metrics to AMP) and an
-  AMP workspace. Their names are `NamePrefix` (default `hud`) plus a suffix unique to the stack, e.g.
+  AMP workspace. One difference: logs (Hud's investigations) go to the `hud-investigations-v1` index rather than
+  the installer's `logs-otel-v1`, whose field mappings other apps' logs can make reject them. Their names are `NamePrefix` (default `hud`) plus a suffix unique to the stack, e.g.
   `hud-1a2b3c4d`, so they can't clash with an Observability Stack you already run;
 - an OpenSearch UI app with an Observability workspace and AMP as a PromQL data source, or, if you set
   `ExistingUiAppId`, Hud's collection and AMP workspace added to your app instead (see

@@ -70,7 +70,7 @@ Parameters:
   OsisLogsUrl:
     Type: String
     Default: ""
-    Description: Optional. Full OTLP logs URL of an OpenSearch Ingestion pipeline, e.g. https://<pipeline>.us-east-1.osis.amazonaws.com/<pipeline-name>/v1/logs. Sends Hud investigations to OpenSearch, and any traces your apps send to the same pipeline's /v1/traces.
+    Description: Optional. Full OTLP logs URL of an OpenSearch Ingestion pipeline, e.g. https://<pipeline>.us-east-1.osis.amazonaws.com/<pipeline-name>/v1/logs. Sends Hud investigations to OpenSearch.
   OsisPipelineName:
     Type: String
     Default: ""
@@ -283,7 +283,6 @@ Resources:
                       ${FunctionsPipeline}
                       ${PerPodPipeline}
                       ${LogsPipeline}
-                      ${TracesPipeline}
                 - FunctionsPipeline: !If
                     - Merge
                     - "metrics/functions: {receivers: [otlp], processors: [memory_limiter, filter/functions, batch, transform/merge, transform/restamp, delta_to_cumulative, interval], exporters: [prometheus_remote_write]}"
@@ -292,18 +291,15 @@ Resources:
                     - Merge
                     - "metrics/per_pod: {receivers: [otlp], processors: [memory_limiter, filter/per_pod, batch, delta_to_cumulative], exporters: [prometheus_remote_write]}"
                     - "metrics: {receivers: [otlp], processors: [memory_limiter, batch, delta_to_cumulative], exporters: [prometheus_remote_write]}"
-                  # Investigations: OTLP logs (and any traces your apps send) to OpenSearch Ingestion, only when OsisLogsUrl is set.
+                  # Investigations: OTLP logs to OpenSearch Ingestion, only when OsisLogsUrl is set. No traces: any the
+                  # collector receives aren't Hud's.
                   OsisAuth: !If [Logs, !Sub "sigv4auth/osis: {region: '${AWS::Region}', service: osis}", ""]
                   OsisExporter: !If
                     - Logs
-                    - !Sub
-                      - "otlp_http/osis: {logs_endpoint: '${OsisLogsUrl}', traces_endpoint: '${TracesUrl}', auth: {authenticator: sigv4auth/osis}, compression: none}"
-                      - TracesUrl: !Join ["/v1/traces", !Split ["/v1/logs", !Ref OsisLogsUrl]]
+                    - !Sub "otlp_http/osis: {logs_endpoint: '${OsisLogsUrl}', auth: {authenticator: sigv4auth/osis}, compression: none}"
                     - ""
                   Extensions: !If [Logs, "[health_check, sigv4auth, sigv4auth/osis]", "[health_check, sigv4auth]"]
                   LogsPipeline: !If [Logs, "logs: {receivers: [otlp], processors: [memory_limiter, batch], exporters: [otlp_http/osis]}", ""]
-                  TracesPipeline: !If [Logs, "traces: {receivers: [otlp], processors: [memory_limiter, batch], exporters: [otlp_http/osis]}", ""]
-
   Service:
     Type: AWS::ECS::Service
     Properties:

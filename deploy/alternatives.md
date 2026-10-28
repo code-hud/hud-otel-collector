@@ -49,8 +49,8 @@ The collector stack creates an AMP workspace unless you pass one, and grants the
 **1. Observability Stack** (skip if you already have one). `deploy/aws/observability.yaml` creates the same
 resources as the official serverless
 [installer](https://github.com/opensearch-project/observability-stack/blob/main/aws/cli-installer/README.md):
-OpenSearch Serverless, an OSIS pipeline (logs, traces and service map to OpenSearch, metrics to AMP), an AMP
-workspace, and the OpenSearch UI with an Observability workspace and AMP as a PromQL data source (~10 minutes):
+OpenSearch Serverless, an OSIS pipeline (logs, traces and service map to OpenSearch, metrics to AMP; logs go to
+`hud-investigations-v1` rather than `logs-otel-v1`), an AMP workspace, and the OpenSearch UI with an Observability workspace and AMP as a PromQL data source (~10 minutes):
 
 ```sh
 aws cloudformation deploy --stack-name hud-obs --template-file deploy/aws/observability.yaml \
