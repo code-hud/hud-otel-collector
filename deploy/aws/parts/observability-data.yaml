@@ -72,9 +72,11 @@ Resources:
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
+              # Not Collection.Arn: OSIS never finishes a pipeline whose role is scoped to a collection created moments
+              # before. DataAccessPolicy still limits the pipeline to this collection.
               - Effect: Allow
                 Action: [aoss:APIAccessAll, aoss:BatchGetCollection]
-                Resource: !GetAtt Collection.Arn
+                Resource: !Sub arn:${AWS::Partition}:aoss:${AWS::Region}:${AWS::AccountId}:collection/*
               - Effect: Allow
                 Action: aps:RemoteWrite
                 Resource: !GetAtt Workspace.Arn

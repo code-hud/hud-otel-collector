@@ -72,7 +72,7 @@ Resources:
             Action:
             - aoss:APIAccessAll
             - aoss:BatchGetCollection
-            Resource: !GetAtt 'Collection.Arn'
+            Resource: !Sub 'arn:${AWS::Partition}:aoss:${AWS::Region}:${AWS::AccountId}:collection/*'
           - Effect: Allow
             Action: aps:RemoteWrite
             Resource: !GetAtt 'Workspace.Arn'
