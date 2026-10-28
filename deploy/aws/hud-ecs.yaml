@@ -1019,7 +1019,7 @@ Resources:
               fields = [{"name": n, "type": t, "esTypes": [e], "searchable": s, "aggregatable": s, "readFromDocValues": s,
                          "count": 0, "scripted": False} for n, t, e, s in (("_id", "string", "_id", True),
                          ("_index", "string", "_index", True), ("_score", "number", "_score", False),
-                         ("_source", "_source", "_source", False), ("time", "date", "date", True), ("observedTime", "date", "date", True))]
+                         ("_source", "_source", "_source", False), ("time", "date", "date", True), ("@timestamp", "date", "date", True))]
               pat = {"title": "hud-investigations-v1*", "timeFieldName": "time", "signalType": "logs", "schemaMappings": logs_schema,
                      "fields": json.dumps(fields)}
               _, f = ui(base, "GET", "/w/%s/api/saved_objects/_find?type=index-pattern&search_fields=title&search=%s" % (ws, urllib.parse.quote(pat["title"])))
