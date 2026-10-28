@@ -17,7 +17,7 @@ docker run --rm -v "$ROOT/deploy:/d:ro" python:3.13-slim sh -c \
 echo "--- generated templates are up to date"
 docker run --rm -v "$ROOT:/r:ro" python:3.13-slim sh -c 'pip install -q pyyaml 2>/dev/null && python /r/scripts/unify.py --check'
 
-echo "--- observability.yaml pipeline body, setup and attach code"
+echo "--- observability.yaml pipeline body, setup, attach and pipeline delay code"
 docker run --rm -v "$ROOT/deploy:/d:ro" python:3.13-slim sh -c 'pip install -q pyyaml 2>/dev/null && python - <<EOF
 import yaml
 yaml.SafeLoader.add_multi_constructor("!", lambda l, s, n: l.construct_sequence(n) if isinstance(n, yaml.SequenceNode) else l.construct_scalar(n) if isinstance(n, yaml.ScalarNode) else l.construct_mapping(n))
@@ -93,6 +93,19 @@ sp = {"AppId": "app1", "CollectionArn": "coll", "DataSourceName": "x", "DirectQu
 Fake.app_gone, Fake.dqs = True, None
 call(ns["handler"], "Create", sp, ok=False)
 call(ns["handler"], "Delete", sp)
+# PipelineDelay: sleeps on Create only, and a bad value still answers.
+import time
+slept, real_sleep = [], time.sleep
+time.sleep = slept.append
+ns = {}
+exec(r["PipelineDelayFunction"]["Properties"]["Code"]["ZipFile"], ns)
+for kind in ("Create", "Update", "Delete"):
+    call(ns["handler"], kind, r["PipelineDelay"]["Properties"])
+assert slept == [120], slept
+call(ns["handler"], "Create", {"Seconds": "x"}, ok=False)
+time.sleep = real_sleep
+assert r["PipelineDelay"]["DependsOn"] == ["Collection", "PipelineRole", "DataAccessPolicy"]
+assert "PipelineDelay" in r["Pipeline"]["DependsOn"], r["Pipeline"]["DependsOn"]
 print("ok")
 EOF'
 
