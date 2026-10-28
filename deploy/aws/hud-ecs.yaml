@@ -943,7 +943,7 @@ Resources:
       Role: !GetAtt 'SetupRole.Arn'
       Code:
         ZipFile: |
-          import json, time, urllib.error, urllib.parse, urllib.request
+          import hashlib, json, time, urllib.error, urllib.parse, urllib.request
           import boto3, botocore.session
           from botocore.auth import SigV4Auth
           from botocore.awsrequest import AWSRequest
@@ -952,8 +952,10 @@ Resources:
 
           def ui(base, method, path, body=None):
               data = json.dumps(body).encode() if body is not None else None
+              # Without the payload hash the UI answers 401 to every request with a body.
               req = AWSRequest(method=method, url=base + path, data=data,
-                               headers={"Content-Type": "application/json", "osd-xsrf": "osd-fetch"})
+                               headers={"Content-Type": "application/json", "osd-xsrf": "osd-fetch",
+                                        "X-Amz-Content-SHA256": hashlib.sha256(data or b"").hexdigest()})
               SigV4Auth(botocore.session.Session().get_credentials(), "opensearch", boto3.session.Session().region_name).add_auth(req)
               r = urllib.request.Request(base + path, data=data, method=method, headers=dict(req.headers))
               try:
@@ -999,14 +1001,14 @@ Resources:
               ds = find(base, "/api/saved_objects/_find?type=data-source&per_page=10", "saved_objects")
               dc = find(base, "/api/saved_objects/_find?type=data-connection&per_page=10", "saved_objects")
 
-              _, wl = ui(base, "POST", "/api/workspaces/_list", {})
-              ws = next((w["id"] for w in (wl or {}).get("result", {}).get("workspaces", []) if w["name"] == WORKSPACE), None)
+              lc, wl = ui(base, "POST", "/api/workspaces/_list", {})
+              ws = next((w["id"] for w in (wl.get("result") or {}).get("workspaces", []) if w["name"] == WORKSPACE), None) if isinstance(wl, dict) else None
               if not ws:
-                  _, r = ui(base, "POST", "/api/workspaces", {"attributes": {"name": WORKSPACE,
+                  cc, r = ui(base, "POST", "/api/workspaces", {"attributes": {"name": WORKSPACE,
                       "description": "Logs, traces and metrics", "features": ["use-case-observability"]}})
-                  ws = (r or {}).get("result", {}).get("id") if isinstance(r, dict) else None
+                  ws = (r.get("result") or {}).get("id") if isinstance(r, dict) else None
                   if not ws:
-                      raise RuntimeError("workspace creation failed: %s" % r)
+                      raise RuntimeError("workspace creation failed: list %s %s; create %s %s" % (lc, wl, cc, r))
               for kind, objs in (("data-source", ds), ("data-connection", dc)):
                   if objs:
                       ui(base, "POST", "/api/workspaces/_associate", {"workspaceId": ws, "savedObjects": [{"type": kind, "id": objs[0]["id"]}]})
@@ -1074,7 +1076,7 @@ Resources:
                   status, reason = "SUCCESS", ""
               except Exception as e:
                   print("failed:", repr(e))
-                  reason = str(e)[:200]
+                  reason = str(e)[:1500]
               finally:
                   respond(event, status, data, reason)
   Setup:
