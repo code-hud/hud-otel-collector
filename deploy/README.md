@@ -60,8 +60,10 @@ there a bad value fails later, at the resource that uses it.
 ### ECS Fargate: `hud-ecs.yaml`
 
 The collector runs as a service in your existing ECS cluster and VPC, reachable at
-`http://hud-collector.hud.local:4318` (private DNS), writing metrics to the stack's AMP workspace and
-investigations to its pipeline. Defaults: 1 vCPU, 4 GB, ARM64, 1 task.
+`http://hud-collector.hud.internal:4318` (private DNS), writing metrics to the stack's AMP workspace and
+investigations to its pipeline. Defaults: 1 vCPU, 4 GB, ARM64, 1 task. A VPC can hold only one private DNS
+namespace with a given name, so a second install in the same VPC needs a different `DnsNamespace` (e.g.
+`hud2.internal`); copy the endpoint from the `OtlpEndpoint` output.
 
 Deploy the collector into public subnets (with a route to an internet gateway). The tasks get public IPs
 (`AssignPublicIp=ENABLED`, the default) to pull the image and reach AMP and OSIS, but the security group only

@@ -44,7 +44,9 @@ The collector stack creates an AMP workspace unless you pass one, and grants the
 `aps:RemoteWrite` on it. Without OSIS parameters, only metrics are sent.
 
 `deploy/aws/ecs-fargate.yaml` runs the collector as a service in your existing ECS cluster and VPC, reachable at
-`http://hud-collector.hud.local:4318` (private DNS). Defaults: 1 vCPU, 4 GB, ARM64, 1 task.
+`http://hud-collector.hud.internal:4318` (private DNS; set `DnsNamespace` to another name, e.g. `hud2.internal`,
+for a second install in the same VPC, and copy the endpoint from the `OtlpEndpoint` output). Defaults: 1 vCPU,
+4 GB, ARM64, 1 task.
 
 **1. Observability Stack** (skip if you already have one). `deploy/aws/observability.yaml` creates the same
 resources as the official serverless
