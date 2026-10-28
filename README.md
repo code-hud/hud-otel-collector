@@ -55,7 +55,6 @@ Only Docker is required; Go runs in a container.
 make build   # OCB generates and compiles _build/hud-otelcol (linux, Docker host arch)
 make image   # hud-otelcol:dev
 make smoke   # five fake pods send deltas concurrently; expects one merged Prometheus series with the summed total
-./test/deploy.sh  # validates the collector configs hud-o11y-resources renders (copies in test/configs/)
 ```
 
 ## Updating upstream
