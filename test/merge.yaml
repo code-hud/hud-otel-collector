@@ -1,0 +1,56 @@
+# The merge-mode pipelines of hud-o11y-resources' deploy configs, exported to a local Prometheus: function metrics merge
+# across pods, everything else stays per pod.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  filter/functions:
+    metrics:
+      metric: ['not IsMatch(name, "^code\\.function\\.")']
+  filter/per_pod:
+    metrics:
+      metric: ['IsMatch(name, "^code\\.function\\.")']
+  # Serializes concurrent pod requests: re-stamping and deltatocumulative aren't
+  # atomic, so without it a point stamped earlier can land later and be dropped.
+  batch:
+  # The kept attributes move from the resource onto the data points, so they become labels and a
+  # stream's identity is its label set; only job and instance stay on the resource.
+  transform/merge:
+    metric_statements:
+      - context: resource
+        statements:
+          - keep_keys(attributes, ["service.name", "service.namespace", "deployment.environment.name", "deployment.id", "k8s.namespace.name", "cloud.provider", "cloud.region", "telemetry.sdk.version", "hud.identity.version"])
+      - context: datapoint
+        statements:
+          - merge_maps(attributes, resource.attributes, "insert")
+          - delete_matching_keys(attributes, "^service\\.(name|namespace)$")
+      - context: resource
+        statements:
+          - keep_keys(attributes, ["service.name", "service.namespace"])
+          - set(attributes["service.instance.id"], "${env:HOSTNAME}")
+  transform/restamp:
+    metric_statements:
+      - context: datapoint
+        statements: ['set(start_time, Now())', 'set(time, Now())']
+  deltatocumulative:
+    max_stale: 1h
+  interval:
+    interval: 2s
+
+exporters:
+  prometheusremotewrite:
+    endpoint: ${env:REMOTE_WRITE_URL}
+
+service:
+  pipelines:
+    metrics/functions:
+      receivers: [otlp]
+      processors: [filter/functions, batch, transform/merge, transform/restamp, deltatocumulative, interval]
+      exporters: [prometheusremotewrite]
+    metrics/per_pod:
+      receivers: [otlp]
+      processors: [filter/per_pod, batch, deltatocumulative]
+      exporters: [prometheusremotewrite]
