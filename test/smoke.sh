@@ -62,11 +62,13 @@ query() { curl -s localhost:19090/api/v1/query --data-urlencode "query=$1" | sed
 checks=(
   'sum(code_function_calls_total)=50'
   'count(code_function_calls_total)=2'
-  'sum(code_function_calls_total{deployment_id="v1",telemetry_sdk_version="1.11.1"})=30'
-  'sum(code_function_calls_total{deployment_id="v2",telemetry_sdk_version="1.11.1"})=20'
+  'sum(code_function_calls_total{deployment_id="v1"})=30'
+  'sum(code_function_calls_total{deployment_id="v2"})=20'
   'count(code_function_calls_total{instance=~"pod-.*"}) or vector(0)=0'
+  'count(code_function_calls_total{telemetry_sdk_version!=""}) or vector(0)=0'
   'sum(hud_flow_messages_total)=50'
   'count(hud_flow_messages_total{instance=~"pod-.*"})=5'
+  'count(hud_flow_messages_total{deployment_id="v1"})=3'
   'count(process_memory_usage{instance=~"pod-.*"})=5'
 )
 
