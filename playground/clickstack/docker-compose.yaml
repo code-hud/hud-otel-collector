@@ -63,7 +63,7 @@ services:
         [{"name":"Hud ClickHouse","host":"http://clickhouse:8123","username":"hud_backend","password":"Backend-pass-1234"}]
       DEFAULT_SOURCES: >-
         [{"kind":"log","name":"Hud investigations","connection":"Hud ClickHouse",
-        "from":{"databaseName":"hud","tableName":"otel_logs"},
+        "from":{"databaseName":"hud_otel","tableName":"otel_logs"},
         "timestampValueExpression":"Timestamp","displayedTimestampValueExpression":"Timestamp",
         "implicitColumnExpression":"Body","bodyExpression":"Body","serviceNameExpression":"ServiceName",
         "severityTextExpression":"SeverityText","eventNameExpression":"EventName",
@@ -71,5 +71,5 @@ services:
         "traceIdExpression":"TraceId","spanIdExpression":"SpanId",
         "defaultTableSelectExpression":"Timestamp,ServiceName,EventName,SeverityText,Body"},
         {"kind":"promql","name":"Hud metrics","connection":"Hud ClickHouse",
-        "from":{"databaseName":"hud","tableName":"metrics"},"timestampValueExpression":"timestamp"}]
+        "from":{"databaseName":"hud_otel","tableName":"metrics"},"timestampValueExpression":"timestamp"}]
     depends_on: [mongo, clickhouse]

@@ -24,7 +24,7 @@ the SDK sends them (first error, baselines).
 PromQL, as `hud_backend` (the read-only user Hud's backend gets):
 
 ```sh
-curl -s -u hud_backend:Backend-pass-1234 -G localhost:8123/prometheus/api/v1/query --data-urlencode table=hud.metrics \
+curl -s -u hud_backend:Backend-pass-1234 -G localhost:8123/prometheus/api/v1/query --data-urlencode table=hud_otel.metrics \
   --data-urlencode 'query=histogram_quantile(0.9, sum by (code_flow_name, le) (rate(code_flow_duration_seconds_bucket[2m])))'
 ```
 
@@ -32,12 +32,12 @@ Logs:
 
 ```sh
 curl -s -u hud_backend:Backend-pass-1234 localhost:8123 \
-  --data-binary "SELECT Timestamp, EventName, SeverityText, LogAttributes['code.flow.name'] FROM hud.otel_logs ORDER BY Timestamp DESC LIMIT 10"
+  --data-binary "SELECT Timestamp, EventName, SeverityText, LogAttributes['code.flow.name'] FROM hud_otel.otel_logs ORDER BY Timestamp DESC LIMIT 10"
 ```
 
 HyperDX: open http://localhost:8080 and create an account (the first one provisions the `Hud ClickHouse` connection,
-as `hud_backend`, and the sources `Hud investigations` (log, `hud.otel_logs`) and `Hud metrics` (PromQL,
-`hud.metrics`)). Search the investigations; for metrics add a dashboard tile on the `Hud metrics` source with a PromQL
+as `hud_backend`, and the sources `Hud investigations` (log, `hud_otel.otel_logs`) and `Hud metrics` (PromQL,
+`hud_otel.metrics`)). Search the investigations; for metrics add a dashboard tile on the `Hud metrics` source with a PromQL
 query like the one above.
 
 With `HUD_SCHEMA_MANAGED=false docker compose up -d`, the init container exits without touching ClickHouse.

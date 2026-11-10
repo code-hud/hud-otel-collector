@@ -2,7 +2,7 @@
 # Five fake pods (three on deployment v1, two on v2) send deltas concurrently. Function metrics must merge
 # into one Prometheus series per deployment holding its sum; flow and process metrics must stay one series per pod.
 # Then the ClickStack path: hud-migrate creates the schema, and deltas, an exponential histogram and a log
-# sent through test/clickstack.yaml must come out of PromQL and hud.otel_logs exactly.
+# sent through test/clickstack.yaml must come out of PromQL and hud_otel.otel_logs exactly.
 set -euo pipefail
 
 IMAGE=${IMAGE:-hud-otelcol:dev}
@@ -111,14 +111,15 @@ done
 MIGRATOR=(-e CLICKHOUSE_ENDPOINT=tcp://smoke-clickhouse:9000 -e CLICKHOUSE_USER=hud_migrator -e CLICKHOUSE_PASSWORD=Migrator-pass-1234)
 migrate() { docker run --rm --network $NET "${MIGRATOR[@]}" --entrypoint /hud-migrate "$IMAGE" "$@"; }
 
-echo "--- hud-migrate: HUD_SCHEMA_MANAGED=false doesn't connect, 4 concurrent up, grants refuse DROP and ADD INDEX, go test (incl. the create-only check)"
+echo "--- hud-migrate: HUD_SCHEMA_MANAGED=false doesn't connect, 4 concurrent up create hud_otel, grants refuse DROP, ADD INDEX and other databases, go test (incl. the create-only check)"
 docker run --rm -e HUD_SCHEMA_MANAGED=false --entrypoint /hud-migrate "$IMAGE" up
 pids=(); for _ in 1 2 3 4; do migrate up & pids+=($!); done
 for p in "${pids[@]}"; do wait "$p"; done
 tables=$(curl -s -u hud_backend:Backend-pass-1234 localhost:18123 \
-  --data-binary "SELECT groupArray(name) FROM (SELECT name FROM system.tables WHERE database = 'hud' AND name NOT LIKE '.inner%' ORDER BY name)")
-[ "$tables" = "['metrics','otel_logs']" ] || { echo "FAIL: hud has $tables after up, want metrics and otel_logs only"; exit 1; }
-for q in "DROP TABLE hud.otel_logs" "ALTER TABLE hud.otel_logs ADD INDEX smoke_idx Body TYPE bloom_filter"; do
+  --data-binary "SELECT groupArray(name) FROM (SELECT name FROM system.tables WHERE database = 'hud_otel' AND name NOT LIKE '.inner%' ORDER BY name)")
+[ "$tables" = "['metrics','otel_logs']" ] || { echo "FAIL: hud_otel has $tables after up, want metrics and otel_logs only"; exit 1; }
+for q in "DROP TABLE hud_otel.otel_logs" "ALTER TABLE hud_otel.otel_logs ADD INDEX smoke_idx Body TYPE bloom_filter" \
+  "DROP DATABASE hud_otel" "CREATE DATABASE smoke_other"; do
   curl -s -u hud_migrator:Migrator-pass-1234 localhost:18123 --data-binary "$q" | grep -q ACCESS_DENIED || { echo "FAIL: hud_migrator may run: $q"; exit 1; }
 done
 docker run --rm --network $NET "${MIGRATOR[@]}" -v "$DIR/../hud-migrate:/src" -w /src \
@@ -149,7 +150,7 @@ EOF
 
 # As hud_backend, the read-only user Hud's backend gets
 promql() {
-  curl -s -u hud_backend:Backend-pass-1234 -G localhost:18123/prometheus/api/v1/query --data-urlencode table=hud.metrics \
+  curl -s -u hud_backend:Backend-pass-1234 -G localhost:18123/prometheus/api/v1/query --data-urlencode table=hud_otel.metrics \
     --data-urlencode "query=$1" | sed -n 's/.*"value":\[[^,]*,"\([^"]*\)"\].*/\1/p'
 }
 sql() { curl -s -u hud_backend:Backend-pass-1234 localhost:18123 --data-binary "$1"; }
@@ -161,4 +162,4 @@ poll promql smoke-clickstack \
   'sum(code_flow_duration_seconds_bucket{le="0.17677687207333218"})=10' \
   'sum(code_flow_duration_seconds_bucket{le="+Inf"})=10' \
   'count((histogram_quantile(0.5, sum by (le) (code_flow_duration_seconds_bucket)) > 0.11) < 0.125)=1'
-poll sql smoke-clickstack "SELECT count() FROM hud.otel_logs WHERE EventName = 'hud.forensic' AND ServiceName = 'smoke'=1"
+poll sql smoke-clickstack "SELECT count() FROM hud_otel.otel_logs WHERE EventName = 'hud.forensic' AND ServiceName = 'smoke'=1"
