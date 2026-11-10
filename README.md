@@ -57,7 +57,7 @@ Only Docker is required; Go runs in a container.
 make build   # OCB generates and compiles _build/hud-otelcol (linux, Docker host arch)
 make image   # hud-otelcol:dev
 make smoke   # five fake pods send deltas concurrently; expects one merged Prometheus series with the summed total,
-             # then runs hud-migrate and test/clickstack.yaml against ClickHouse and checks PromQL and hud_otel.otel_logs
+             # then runs hud-migrate and test/clickstack.yaml against ClickHouse and checks PromQL and otel_logs (database hud_otel_smoke)
 ```
 
 ## ClickStack
@@ -79,10 +79,13 @@ created, later changes don't touch an existing table). With `HUD_SCHEMA_MANAGED=
 
 Rules for `hud-migrate/schema/*.sql`, as in ClickStack:
 
+- The customer's admin setup (`playground/clickstack/setup.sql`) grants on the same database name: replace its
+  `${HUD_CLICKHOUSE_DATABASE}` placeholder, or run `setup.sh`, which validates the name and substitutes it. The grants
+  stay scoped to that one database; with another name, `hud-migrate` is denied.
 - **Create only.** Statements are `CREATE ... IF NOT EXISTS` (database, tables, views) or `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`; never
   `CREATE OR REPLACE`, `MODIFY`, `RENAME` or `DROP`. Changing an existing object means a new object under a new name.
   `TestSchemaIsCreateOnly` (run by `make smoke`) fails on anything else, and the migrator's grants (`CREATE
-  DATABASE, CREATE TABLE, CREATE VIEW, ALTER ADD COLUMN, SELECT, INSERT ON hud_otel.*`) make the server refuse it too. Add a new numbered file
+  DATABASE, CREATE TABLE, CREATE VIEW, ALTER ADD COLUMN, SELECT, INSERT ON <database>.*`) make the server refuse it too. Add a new numbered file
   rather than editing a released one.
 - A new column needs a `DEFAULT` or `MATERIALIZED` expression, so older collectors' inserts, which don't name it,
   keep working.

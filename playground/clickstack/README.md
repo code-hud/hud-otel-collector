@@ -1,6 +1,6 @@
 # ClickStack playground
 
-ClickHouse with the `TimeSeries` engine and the Prometheus API, the customer setup script (`setup.sql`), `hud-migrate`
+ClickHouse with the `TimeSeries` engine and the Prometheus API, the customer setup script (`setup.sql`, run by `setup.sh`), `hud-migrate`
 as an init container, the collector on `test/clickstack.yaml`, HyperDX, and the node SDK's sample app against its
 fake Hud backend.
 
@@ -39,6 +39,10 @@ HyperDX: open http://localhost:8080 and create an account (the first one provisi
 as `hud_backend`, and the sources `Hud investigations` (log, `hud_otel.otel_logs`) and `Hud metrics` (PromQL,
 `hud_otel.metrics`)). Search the investigations; for metrics add a dashboard tile on the `Hud metrics` source with a PromQL
 query like the one above.
+
+The database is `hud_otel` unless you set `HUD_CLICKHOUSE_DATABASE` (a plain identifier) for `docker compose up`;
+ClickHouse's setup, `hud-migrate`, the collector and HyperDX's sources all follow it. Use the same name in the queries
+above. Changing it needs `docker compose down -v` first, since the setup runs on ClickHouse's first start only.
 
 With `HUD_SCHEMA_MANAGED=false docker compose up -d`, the init container exits without touching ClickHouse.
 

@@ -2,7 +2,7 @@
 # Five fake pods (three on deployment v1, two on v2) send deltas concurrently. Function metrics must merge
 # into one Prometheus series per deployment holding its sum; flow and process metrics must stay one series per pod.
 # Then the ClickStack path: hud-migrate creates the schema, and deltas, an exponential histogram and a log
-# sent through test/clickstack.yaml must come out of PromQL and hud_otel.otel_logs exactly.
+# sent through test/clickstack.yaml must come out of PromQL and otel_logs exactly.
 set -euo pipefail
 
 IMAGE=${IMAGE:-hud-otelcol:dev}
@@ -99,27 +99,34 @@ poll() {
 }
 poll query smoke-collector "${checks[@]}"
 
-echo "--- ClickStack: ClickHouse with the playground's TimeSeries config and setup script"
+# A non-default database name, so the setup script, hud-migrate and the collector config all have to follow it
+DB=hud_otel_smoke
+echo "--- ClickStack: ClickHouse with the playground's TimeSeries config and setup script, database $DB"
+SETUP=(-v "$PLAYGROUND/setup.sh:/docker-entrypoint-initdb.d/setup.sh:ro" -v "$PLAYGROUND/setup.sql:/hud/setup.sql:ro")
+out=$(docker run --rm "${SETUP[@]}" -e "HUD_CLICKHOUSE_DATABASE=x; DROP USER y" \
+  --entrypoint /docker-entrypoint-initdb.d/setup.sh "$CLICKHOUSE_IMAGE" 2>&1 || true)
+grep -q "not a plain identifier" <<<"$out" || { echo "FAIL: setup.sh took an unsafe database name: $out"; exit 1; }
 docker run -d --name smoke-clickhouse --network $NET -p 18123:8123 \
-  -e CLICKHOUSE_PASSWORD=admin-pass -e CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1 \
+  -e CLICKHOUSE_PASSWORD=admin-pass -e CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1 -e HUD_CLICKHOUSE_DATABASE=$DB \
   -v "$PLAYGROUND/clickhouse/prometheus.xml:/etc/clickhouse-server/config.d/prometheus.xml:ro" \
-  -v "$PLAYGROUND/setup.sql:/docker-entrypoint-initdb.d/setup.sql:ro" "$CLICKHOUSE_IMAGE" >/dev/null
-# The image runs setup.sql on a temporary server, then restarts it
+  "${SETUP[@]}" "$CLICKHOUSE_IMAGE" >/dev/null
+# The image runs setup.sh on a temporary server, then restarts it
 for _ in $(seq 60); do
   [ "$(curl -s -u hud_backend:Backend-pass-1234 localhost:18123 --data-binary 'SELECT 1')" = 1 ] && break; sleep 1
 done
-MIGRATOR=(-e CLICKHOUSE_ENDPOINT=tcp://smoke-clickhouse:9000 -e CLICKHOUSE_USER=hud_migrator -e CLICKHOUSE_PASSWORD=Migrator-pass-1234)
+MIGRATOR=(-e CLICKHOUSE_ENDPOINT=tcp://smoke-clickhouse:9000 -e CLICKHOUSE_USER=hud_migrator -e CLICKHOUSE_PASSWORD=Migrator-pass-1234
+  -e HUD_CLICKHOUSE_DATABASE=$DB)
 migrate() { docker run --rm --network $NET "${MIGRATOR[@]}" --entrypoint /hud-migrate "$IMAGE" "$@"; }
 
-echo "--- hud-migrate: HUD_SCHEMA_MANAGED=false doesn't connect, 4 concurrent up create hud_otel, grants refuse DROP, ADD INDEX and other databases, go test (incl. the create-only check)"
+echo "--- hud-migrate: HUD_SCHEMA_MANAGED=false doesn't connect, 4 concurrent up create $DB, grants refuse DROP, ADD INDEX and other databases, go test (incl. the create-only check)"
 docker run --rm -e HUD_SCHEMA_MANAGED=false --entrypoint /hud-migrate "$IMAGE" up
 pids=(); for _ in 1 2 3 4; do migrate up & pids+=($!); done
 for p in "${pids[@]}"; do wait "$p"; done
 tables=$(curl -s -u hud_backend:Backend-pass-1234 localhost:18123 \
-  --data-binary "SELECT groupArray(name) FROM (SELECT name FROM system.tables WHERE database = 'hud_otel' AND name NOT LIKE '.inner%' ORDER BY name)")
-[ "$tables" = "['metrics','otel_logs']" ] || { echo "FAIL: hud_otel has $tables after up, want metrics and otel_logs only"; exit 1; }
-for q in "DROP TABLE hud_otel.otel_logs" "ALTER TABLE hud_otel.otel_logs ADD INDEX smoke_idx Body TYPE bloom_filter" \
-  "DROP DATABASE hud_otel" "CREATE DATABASE smoke_other"; do
+  --data-binary "SELECT groupArray(name) FROM (SELECT name FROM system.tables WHERE database = '$DB' AND name NOT LIKE '.inner%' ORDER BY name)")
+[ "$tables" = "['metrics','otel_logs']" ] || { echo "FAIL: $DB has $tables after up, want metrics and otel_logs only"; exit 1; }
+for q in "DROP TABLE $DB.otel_logs" "ALTER TABLE $DB.otel_logs ADD INDEX smoke_idx Body TYPE bloom_filter" \
+  "DROP DATABASE $DB" "CREATE DATABASE hud_otel"; do
   curl -s -u hud_migrator:Migrator-pass-1234 localhost:18123 --data-binary "$q" | grep -q ACCESS_DENIED || { echo "FAIL: hud_migrator may run: $q"; exit 1; }
 done
 docker run --rm --network $NET "${MIGRATOR[@]}" -v "$DIR/../hud-migrate:/src" -w /src \
@@ -128,7 +135,7 @@ docker run --rm --network $NET "${MIGRATOR[@]}" -v "$DIR/../hud-migrate:/src" -w
 echo "--- ClickStack collector: two deltas of a counter and of a scale-2 exponential histogram, one log"
 docker run -d --name smoke-clickstack --network $NET -p 14319:4318 -v "$DIR:/cfg:ro" -e EXPORT_INTERVAL=2s \
   -e CLICKHOUSE_ENDPOINT=http://smoke-clickhouse:8123 -e CLICKHOUSE_USER=hud_collector -e CLICKHOUSE_PASSWORD=Collector-pass-1234 \
-  "$IMAGE" --config /cfg/clickstack.yaml >/dev/null
+  -e HUD_CLICKHOUSE_DATABASE=$DB "$IMAGE" --config /cfg/clickstack.yaml >/dev/null
 for _ in $(seq 30); do curl -s -o /dev/null localhost:14319 && break; sleep 1; done
 
 # Buckets (2^(k/4), 2^((k+1)/4)] s for k = -14..-12 hold 1, 2 and 2 per delta, so per delta the classic bucket
@@ -150,7 +157,7 @@ EOF
 
 # As hud_backend, the read-only user Hud's backend gets
 promql() {
-  curl -s -u hud_backend:Backend-pass-1234 -G localhost:18123/prometheus/api/v1/query --data-urlencode table=hud_otel.metrics \
+  curl -s -u hud_backend:Backend-pass-1234 -G localhost:18123/prometheus/api/v1/query --data-urlencode table=$DB.metrics \
     --data-urlencode "query=$1" | sed -n 's/.*"value":\[[^,]*,"\([^"]*\)"\].*/\1/p'
 }
 sql() { curl -s -u hud_backend:Backend-pass-1234 localhost:18123 --data-binary "$1"; }
@@ -162,4 +169,4 @@ poll promql smoke-clickstack \
   'sum(code_flow_duration_seconds_bucket{le="0.17677687207333218"})=10' \
   'sum(code_flow_duration_seconds_bucket{le="+Inf"})=10' \
   'count((histogram_quantile(0.5, sum by (le) (code_flow_duration_seconds_bucket)) > 0.11) < 0.125)=1'
-poll sql smoke-clickstack "SELECT count() FROM hud_otel.otel_logs WHERE EventName = 'hud.forensic' AND ServiceName = 'smoke'=1"
+poll sql smoke-clickstack "SELECT count() FROM $DB.otel_logs WHERE EventName = 'hud.forensic' AND ServiceName = 'smoke'=1"
