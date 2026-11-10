@@ -73,3 +73,7 @@ alpha and can change behavior between versions.
 
 Add its `gomod` line to `manifest.yaml` (the module must exist in the upstream `otelcol-contrib` manifest,
 or `bump.sh` fails), extend `test/` if it matters for the pipeline, and open a PR.
+
+## License
+
+Copyright Hud Technology Inc. Licensed under the [Apache License, Version 2.0](LICENSE).
