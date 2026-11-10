@@ -8,8 +8,8 @@ It is not a fork: `manifest.yaml` lists upstream modules at pinned versions, and
 | --- | --- |
 | Receivers | `otlp` |
 | Processors | `transform`, `deltatocumulative`, `interval`, `memory_limiter`, `batch` |
-| Exporters | `prometheusremotewrite`, `otlphttp`, `debug` |
-| Extensions | `sigv4auth`, `health_check` |
+| Exporters | `prometheusremotewrite`, `clickhouse`, `otlphttp`, `debug` |
+| Extensions | `sigv4auth`, `basicauth`, `health_check` |
 
 Every config written for this distribution also runs on `otel/opentelemetry-collector-contrib`, which is the fallback.
 
@@ -18,7 +18,9 @@ Owner: [@ilansh](https://github.com/ilansh). The owner reviews bump PRs and hand
 ## Artifacts
 
 - Image: `ghcr.io/code-hud/hud-otel-collector:<version>` (multi-arch: `linux/amd64`, `linux/arm64`), plus `:latest`.
-- Binaries: linux, darwin and windows for amd64 and arm64, attached to each [GitHub release](../../releases).
+  It holds `/hud-otelcol` (the entrypoint) and `/hud-migrate` (see [ClickStack](#clickstack)).
+- Binaries: `hud-otelcol` and `hud-migrate` for linux, darwin and windows, amd64 and arm64, attached to each
+  [GitHub release](../../releases).
 
 Versions follow the upstream `opentelemetry-collector-releases` version (`0.163.2`). A rebuild of the
 same upstream version (for example a Go security fix) is tagged `v0.163.2-hud.1`.
@@ -54,8 +56,37 @@ Only Docker is required; Go runs in a container.
 ```sh
 make build   # OCB generates and compiles _build/hud-otelcol (linux, Docker host arch)
 make image   # hud-otelcol:dev
-make smoke   # five fake pods send deltas concurrently; expects one merged Prometheus series with the summed total
+make smoke   # five fake pods send deltas concurrently; expects one merged Prometheus series with the summed total,
+             # then runs hud-migrate and test/clickstack.yaml against ClickHouse and checks PromQL and hud.otel_logs
 ```
+
+## ClickStack
+
+`test/clickstack.yaml` is the AMP pipeline writing to ClickHouse: metrics are remote-written into `hud.metrics`, a
+`TimeSeries` table queried with PromQL, and logs go through the `clickhouse` exporter into `hud.otel_logs`. The SDK's
+exponential histograms are converted to classic buckets first, because ClickHouse drops native histograms.
+`playground/clickstack/` runs it end to end with HyperDX and the node SDK.
+
+`hud-migrate` owns the schema in the `hud` database (the customer's setup script creates the database and users).
+It runs as an init container before the collector, with DDL credentials the collector never gets, and re-applies
+every embedded `hud-migrate/schema/*.sql` on each start. Running it from every replica at once is safe.
+
+Environment: `CLICKHOUSE_ENDPOINT` (`tcp://`, `http://` or `https://`), `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`,
+`HUD_LOGS_TTL_DAYS` (default 30; only applies when `hud.otel_logs` is created, later changes don't touch an existing
+table). With `HUD_SCHEMA_MANAGED=false` it exits without connecting, for customers who run the same SQL themselves.
+
+Rules for `hud-migrate/schema/*.sql`, as in ClickStack:
+
+- **Create only.** Statements are `CREATE ... IF NOT EXISTS` or `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`; never
+  `CREATE OR REPLACE`, `MODIFY`, `RENAME` or `DROP`. Changing an existing object means a new object under a new name.
+  `TestSchemaIsCreateOnly` (run by `make smoke`) fails on anything else, and the migrator's grants (`CREATE TABLE,
+  CREATE VIEW, ALTER ADD COLUMN, SELECT, INSERT ON hud.*`) make the server refuse it too. Add a new numbered file
+  rather than editing a released one.
+- A new column needs a `DEFAULT` or `MATERIALIZED` expression, so older collectors' inserts, which don't name it,
+  keep working.
+- No `CREATE DATABASE`, and nothing outside `hud`: the migrator only has DDL on `hud.*`.
+- Materialized views use `DEFINER = CURRENT_USER SQL SECURITY DEFINER`, so the insert-only collector user can
+  write through them.
 
 ## Updating upstream
 

@@ -10,6 +10,8 @@ COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certifica
 COPY LICENSE /LICENSE
 ARG TARGETPLATFORM
 COPY --chmod=755 $TARGETPLATFORM/hud-otelcol /hud-otelcol
+# Init container: entrypoint /hud-migrate
+COPY --chmod=755 $TARGETPLATFORM/hud-migrate /hud-migrate
 ENTRYPOINT ["/hud-otelcol"]
 # 4317/4318: OTLP gRPC/HTTP, 13133: health check
 EXPOSE 4317 4318 13133

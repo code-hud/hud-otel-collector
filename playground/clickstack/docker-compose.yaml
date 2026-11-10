@@ -1,0 +1,75 @@
+name: hud-clickstack
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:${CLICKHOUSE_VERSION:-26.10}
+    environment:
+      CLICKHOUSE_PASSWORD: admin-pass
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - ./clickhouse/prometheus.xml:/etc/clickhouse-server/config.d/prometheus.xml:ro
+      - ./setup.sql:/docker-entrypoint-initdb.d/setup.sql:ro
+    ports: ["8123:8123", "9000:9000"]
+    healthcheck:
+      test: clickhouse-client --password admin-pass -q "SELECT count() FROM system.users WHERE name = 'hud_backend'" | grep -q 1
+      interval: 2s
+      retries: 30
+
+  # The init container: same image as the collector, DDL credentials only here.
+  hud-migrate:
+    image: ${COLLECTOR_IMAGE:-hud-otelcol:dev}
+    entrypoint: ["/hud-migrate"]
+    command: ["up"]
+    environment:
+      CLICKHOUSE_ENDPOINT: tcp://clickhouse:9000
+      CLICKHOUSE_USER: hud_migrator
+      CLICKHOUSE_PASSWORD: Migrator-pass-1234
+      HUD_SCHEMA_MANAGED: ${HUD_SCHEMA_MANAGED:-true}
+    depends_on:
+      clickhouse: {condition: service_healthy}
+
+  collector:
+    image: ${COLLECTOR_IMAGE:-hud-otelcol:dev}
+    command: ["--config", "/cfg/clickstack.yaml"]
+    volumes:
+      - ../../test:/cfg:ro
+    environment:
+      CLICKHOUSE_ENDPOINT: http://clickhouse:8123
+      CLICKHOUSE_USER: hud_collector
+      CLICKHOUSE_PASSWORD: Collector-pass-1234
+      EXPORT_INTERVAL: 10s
+    ports: ["4317:4317", "4318:4318", "13133:13133"]
+    depends_on:
+      hud-migrate: {condition: service_completed_successfully}
+
+  mongo:
+    image: mongo:5.0.32-focal
+
+  # HyperDX reads as hud_backend, the read-only user Hud's backend gets.
+  hyperdx:
+    image: hyperdx/hyperdx:${HYPERDX_VERSION:-2.43.1}
+    ports: ["8080:8080", "8000:8000"]
+    environment:
+      FRONTEND_URL: http://localhost:8080
+      HYPERDX_APP_URL: http://localhost
+      HYPERDX_APP_PORT: 8080
+      HYPERDX_API_PORT: 8000
+      SERVER_URL: http://127.0.0.1:8000
+      MONGO_URI: mongodb://mongo:27017/hyperdx
+      USAGE_STATS_ENABLED: "false"
+      ENABLE_PROMQL: "true"
+      NEXT_PUBLIC_ENABLE_PROMQL: "true"
+      DEFAULT_CONNECTIONS: >-
+        [{"name":"Hud ClickHouse","host":"http://clickhouse:8123","username":"hud_backend","password":"Backend-pass-1234"}]
+      DEFAULT_SOURCES: >-
+        [{"kind":"log","name":"Hud investigations","connection":"Hud ClickHouse",
+        "from":{"databaseName":"hud","tableName":"otel_logs"},
+        "timestampValueExpression":"Timestamp","displayedTimestampValueExpression":"Timestamp",
+        "implicitColumnExpression":"Body","bodyExpression":"Body","serviceNameExpression":"ServiceName",
+        "severityTextExpression":"SeverityText","eventNameExpression":"EventName",
+        "eventAttributesExpression":"LogAttributes","resourceAttributesExpression":"ResourceAttributes",
+        "traceIdExpression":"TraceId","spanIdExpression":"SpanId",
+        "defaultTableSelectExpression":"Timestamp,ServiceName,EventName,SeverityText,Body"},
+        {"kind":"promql","name":"Hud metrics","connection":"Hud ClickHouse",
+        "from":{"databaseName":"hud","tableName":"metrics"},"timestampValueExpression":"timestamp"}]
+    depends_on: [mongo, clickhouse]

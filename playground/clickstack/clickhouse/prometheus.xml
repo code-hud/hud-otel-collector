@@ -1,0 +1,12 @@
+<!-- Self-managed only: preview ClickHouse Cloud services come with these endpoints. -->
+<clickhouse>
+    <http_handlers>
+        <defaults/>
+        <rule>
+            <url_prefix>/prometheus/api/v1</url_prefix>
+            <handler>
+                <type>prometheus_api_v1</type>
+            </handler>
+        </rule>
+    </http_handlers>
+</clickhouse>

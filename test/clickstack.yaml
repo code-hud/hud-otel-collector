@@ -1,0 +1,60 @@
+# ClickStack export: the AMP pipeline (test/amp.yaml) remote-writing into the hud.metrics TimeSeries table, and logs
+# through the clickhouse exporter into hud.otel_logs. hud-migrate creates both tables; CLICKHOUSE_USER only needs
+# INSERT on hud.*.
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+  basicauth/clickhouse:
+    client_auth:
+      username: ${env:CLICKHOUSE_USER}
+      password: ${env:CLICKHOUSE_PASSWORD}
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+  # ClickHouse silently drops native histograms (ClickHouse#122051), which is what the exporter makes of exponential
+  # ones. The bounds are 2^(k/2) s for k = -20..12, times (1 + 1e-6): every bucket of the SDK's scale-2 grid,
+  # (2^(j/4), 2^((j+1)/4)] s, falls inside one classic bucket, so the counts stay exact on a coarser grid. Bounds
+  # exactly on the grid lose counts to floating-point error in the computed bucket edges.
+  transform/classic:
+    metric_statements:
+      - context: metric
+        statements:
+          - convert_exponential_histogram_to_histogram("upper", [0.0009765634765625, 0.0013810693130729076, 0.001953126953125, 0.0027621386261458152, 0.00390625390625, 0.0055242772522916305, 0.0078125078125, 0.011048554504583261, 0.015625015625, 0.022097109009166522, 0.03125003125, 0.044194218018333044, 0.0625000625, 0.08838843603666609, 0.125000125, 0.17677687207333218, 0.25000025, 0.35355374414666435, 0.5000005, 0.7071074882933287, 1.000001, 1.4142149765866574, 2.000002, 2.828429953173315, 4.000004, 5.65685990634663, 8.000008, 11.31371981269326, 16.000016, 22.62743962538652, 32.000032, 45.25487925077304, 64.000064]) where metric.type == METRIC_DATA_TYPE_EXPONENTIAL_HISTOGRAM
+  delta_to_cumulative:
+  interval:
+    interval: ${env:EXPORT_INTERVAL:-60s}
+
+exporters:
+  prometheus_remote_write:
+    endpoint: ${env:CLICKHOUSE_ENDPOINT}/prometheus/api/v1/write?database=hud&table=metrics
+    auth:
+      authenticator: basicauth/clickhouse
+  clickhouse:
+    endpoint: ${env:CLICKHOUSE_ENDPOINT}
+    username: ${env:CLICKHOUSE_USER}
+    password: ${env:CLICKHOUSE_PASSWORD}
+    database: hud
+    logs_table_name: otel_logs
+    create_schema: false
+
+service:
+  extensions: [health_check, basicauth/clickhouse]
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, transform/classic, delta_to_cumulative, interval]
+      exporters: [prometheus_remote_write]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter]
+      exporters: [clickhouse]
