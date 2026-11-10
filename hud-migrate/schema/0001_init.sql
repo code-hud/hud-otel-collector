@@ -3,13 +3,13 @@
 -- +goose ENVSUB ON
 
 -- Fed by the collector's prometheus_remote_write exporter, read with PromQL. The inner tables land in hud too.
--- ponytail: no samples TTL; it has to name the inner layout's columns, which change between engine versions.
+-- No samples TTL: it has to name the inner layout's columns, which change between engine versions.
 CREATE TABLE IF NOT EXISTS hud.metrics
 ENGINE = TimeSeries
 SETTINGS enable_time_series_table = 1;
 
 -- ClickStack's otel_logs layout (hyperdx docker/otel-collector/schema/seed/00002_otel_logs_compat.sql), so HyperDX
--- reads it as a log source. ponytail: the bloom-filter variant runs on every server version; ClickStack's text-index
+-- reads it as a log source. The bloom-filter variant runs on every server version; ClickStack's text-index
 -- variant (26.2+) would be a new table. HUD_LOGS_TTL_DAYS only applies when the table is created.
 CREATE TABLE IF NOT EXISTS hud.otel_logs
 (

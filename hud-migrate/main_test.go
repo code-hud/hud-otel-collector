@@ -18,7 +18,7 @@ var (
 
 // Schema files only create what is missing: every statement is CREATE ... IF NOT EXISTS or
 // ALTER TABLE ... ADD COLUMN IF NOT EXISTS. Changing an existing object means a new object under a new name.
-// ponytail: a textual check, so a column or string literally named "drop" trips it; rename it.
+// The check is textual, so a column or string literally named "drop" trips it; rename it.
 func checkSQL(sql string) error {
 	for _, stmt := range strings.Split(comment.ReplaceAllString(sql, ""), ";") {
 		stmt = strings.TrimSpace(stmt)
