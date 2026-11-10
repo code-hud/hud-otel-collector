@@ -1,12 +1,13 @@
 -- The customer's one-time admin setup (clickstack-integration-design.md, "Bootstrap"), with playground passwords.
--- The ClickHouse image runs it as the default user on first start.
-CREATE DATABASE IF NOT EXISTS hud;
+-- ${HUD_CLICKHOUSE_DATABASE} is the database name the collector and hud-migrate are configured with (default
+-- hud_otel): replace it before running this by hand, or run setup.sh, which the playground's ClickHouse does on
+-- first start. hud-migrate creates the database; the grants name it before it exists.
 
-CREATE ROLE IF NOT EXISTS hud_write;   GRANT INSERT ON hud.* TO hud_write;
-CREATE ROLE IF NOT EXISTS hud_read;    GRANT SELECT ON hud.* TO hud_read;
+CREATE ROLE IF NOT EXISTS hud_write;   GRANT INSERT ON ${HUD_CLICKHOUSE_DATABASE}.* TO hud_write;
+CREATE ROLE IF NOT EXISTS hud_read;    GRANT SELECT ON ${HUD_CLICKHOUSE_DATABASE}.* TO hud_read;
 -- Only what the create-only schema rule allows: the server refuses DROP, RENAME, MODIFY, CREATE OR REPLACE, ADD INDEX.
 CREATE ROLE IF NOT EXISTS hud_ddl;
-GRANT CREATE TABLE, CREATE VIEW, ALTER ADD COLUMN, SELECT, INSERT ON hud.* TO hud_ddl;
+GRANT CREATE DATABASE, CREATE TABLE, CREATE VIEW, ALTER ADD COLUMN, SELECT, INSERT ON ${HUD_CLICKHOUSE_DATABASE}.* TO hud_ddl;
 
 -- PromQL on TimeSeries needs the temporary-table grant (until ClickHouse#120724) and the time-series aggregate
 -- functions; readonly = 1 would reject both.

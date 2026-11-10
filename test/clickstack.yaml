@@ -1,6 +1,6 @@
-# ClickStack export: the AMP pipeline (test/amp.yaml) remote-writing into the hud.metrics TimeSeries table, and logs
-# through the clickhouse exporter into hud.otel_logs. hud-migrate creates both tables; CLICKHOUSE_USER only needs
-# INSERT on hud.*.
+# ClickStack export: the AMP pipeline (test/amp.yaml) remote-writing into the metrics TimeSeries table, and logs
+# through the clickhouse exporter into otel_logs, both in HUD_CLICKHOUSE_DATABASE (default hud_otel). hud-migrate
+# creates the database and tables; CLICKHOUSE_USER only needs INSERT on it.
 extensions:
   health_check:
     endpoint: 0.0.0.0:13133
@@ -36,14 +36,14 @@ processors:
 
 exporters:
   prometheus_remote_write:
-    endpoint: ${env:CLICKHOUSE_ENDPOINT}/prometheus/api/v1/write?database=hud&table=metrics
+    endpoint: ${env:CLICKHOUSE_ENDPOINT}/prometheus/api/v1/write?database=${env:HUD_CLICKHOUSE_DATABASE:-hud_otel}&table=metrics
     auth:
       authenticator: basicauth/clickhouse
   clickhouse:
     endpoint: ${env:CLICKHOUSE_ENDPOINT}
     username: ${env:CLICKHOUSE_USER}
     password: ${env:CLICKHOUSE_PASSWORD}
-    database: hud
+    database: ${env:HUD_CLICKHOUSE_DATABASE:-hud_otel}
     logs_table_name: otel_logs
     create_schema: false
 

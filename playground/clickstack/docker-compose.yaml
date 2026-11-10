@@ -1,14 +1,19 @@
 name: hud-clickstack
 
+# HUD_CLICKHOUSE_DATABASE (default hud_otel) is the one database name: setup.sh grants on it, hud-migrate creates it,
+# the collector writes to it and HyperDX's sources read it.
+
 services:
   clickhouse:
     image: clickhouse/clickhouse-server:${CLICKHOUSE_VERSION:-26.10}
     environment:
       CLICKHOUSE_PASSWORD: admin-pass
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+      HUD_CLICKHOUSE_DATABASE: ${HUD_CLICKHOUSE_DATABASE:-hud_otel}
     volumes:
       - ./clickhouse/prometheus.xml:/etc/clickhouse-server/config.d/prometheus.xml:ro
-      - ./setup.sql:/docker-entrypoint-initdb.d/setup.sql:ro
+      - ./setup.sh:/docker-entrypoint-initdb.d/setup.sh:ro
+      - ./setup.sql:/hud/setup.sql:ro
     ports: ["8123:8123", "9000:9000"]
     healthcheck:
       test: clickhouse-client --password admin-pass -q "SELECT count() FROM system.users WHERE name = 'hud_backend'" | grep -q 1
@@ -24,6 +29,7 @@ services:
       CLICKHOUSE_ENDPOINT: tcp://clickhouse:9000
       CLICKHOUSE_USER: hud_migrator
       CLICKHOUSE_PASSWORD: Migrator-pass-1234
+      HUD_CLICKHOUSE_DATABASE: ${HUD_CLICKHOUSE_DATABASE:-hud_otel}
       HUD_SCHEMA_MANAGED: ${HUD_SCHEMA_MANAGED:-true}
     depends_on:
       clickhouse: {condition: service_healthy}
@@ -37,6 +43,7 @@ services:
       CLICKHOUSE_ENDPOINT: http://clickhouse:8123
       CLICKHOUSE_USER: hud_collector
       CLICKHOUSE_PASSWORD: Collector-pass-1234
+      HUD_CLICKHOUSE_DATABASE: ${HUD_CLICKHOUSE_DATABASE:-hud_otel}
       EXPORT_INTERVAL: 10s
     ports: ["4317:4317", "4318:4318", "13133:13133"]
     depends_on:
@@ -63,7 +70,7 @@ services:
         [{"name":"Hud ClickHouse","host":"http://clickhouse:8123","username":"hud_backend","password":"Backend-pass-1234"}]
       DEFAULT_SOURCES: >-
         [{"kind":"log","name":"Hud investigations","connection":"Hud ClickHouse",
-        "from":{"databaseName":"hud","tableName":"otel_logs"},
+        "from":{"databaseName":"${HUD_CLICKHOUSE_DATABASE:-hud_otel}","tableName":"otel_logs"},
         "timestampValueExpression":"Timestamp","displayedTimestampValueExpression":"Timestamp",
         "implicitColumnExpression":"Body","bodyExpression":"Body","serviceNameExpression":"ServiceName",
         "severityTextExpression":"SeverityText","eventNameExpression":"EventName",
@@ -71,5 +78,5 @@ services:
         "traceIdExpression":"TraceId","spanIdExpression":"SpanId",
         "defaultTableSelectExpression":"Timestamp,ServiceName,EventName,SeverityText,Body"},
         {"kind":"promql","name":"Hud metrics","connection":"Hud ClickHouse",
-        "from":{"databaseName":"hud","tableName":"metrics"},"timestampValueExpression":"timestamp"}]
+        "from":{"databaseName":"${HUD_CLICKHOUSE_DATABASE:-hud_otel}","tableName":"metrics"},"timestampValueExpression":"timestamp"}]
     depends_on: [mongo, clickhouse]
