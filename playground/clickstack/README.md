@@ -40,7 +40,6 @@ as `hud_backend`, and the sources `Hud investigations` (log, `hud.otel_logs`) an
 `hud.metrics`)). Search the investigations; for metrics add a dashboard tile on the `Hud metrics` source with a PromQL
 query like the one above.
 
-Schema state: `docker compose run --rm --entrypoint /hud-migrate hud-migrate status`. With `HUD_SCHEMA_MANAGED=false
-docker compose up -d`, the init container exits without touching ClickHouse.
+With `HUD_SCHEMA_MANAGED=false docker compose up -d`, the init container exits without touching ClickHouse.
 
 `docker compose down -v` removes everything, including ClickHouse's and Mongo's anonymous volumes.

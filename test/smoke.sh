@@ -111,14 +111,18 @@ done
 MIGRATOR=(-e CLICKHOUSE_ENDPOINT=tcp://smoke-clickhouse:9000 -e CLICKHOUSE_USER=hud_migrator -e CLICKHOUSE_PASSWORD=Migrator-pass-1234)
 migrate() { docker run --rm --network $NET "${MIGRATOR[@]}" --entrypoint /hud-migrate "$IMAGE" "$@"; }
 
-echo "--- hud-migrate: HUD_SCHEMA_MANAGED=false doesn't connect, 4 concurrent up, once, status, go test"
+echo "--- hud-migrate: HUD_SCHEMA_MANAGED=false doesn't connect, 4 concurrent up, grants refuse DROP and ADD INDEX, go test (incl. the create-only check)"
 docker run --rm -e HUD_SCHEMA_MANAGED=false --entrypoint /hud-migrate "$IMAGE" up
 pids=(); for _ in 1 2 3 4; do migrate up & pids+=($!); done
 for p in "${pids[@]}"; do wait "$p"; done
-migrate once
-migrate status | grep -q "^hud schema version 1 " || { migrate status; exit 1; }
+tables=$(curl -s -u hud_backend:Backend-pass-1234 localhost:18123 \
+  --data-binary "SELECT groupArray(name) FROM (SELECT name FROM system.tables WHERE database = 'hud' AND name NOT LIKE '.inner%' ORDER BY name)")
+[ "$tables" = "['metrics','otel_logs']" ] || { echo "FAIL: hud has $tables after up, want metrics and otel_logs only"; exit 1; }
+for q in "DROP TABLE hud.otel_logs" "ALTER TABLE hud.otel_logs ADD INDEX smoke_idx Body TYPE bloom_filter"; do
+  curl -s -u hud_migrator:Migrator-pass-1234 localhost:18123 --data-binary "$q" | grep -q ACCESS_DENIED || { echo "FAIL: hud_migrator may run: $q"; exit 1; }
+done
 docker run --rm --network $NET "${MIGRATOR[@]}" -v "$DIR/../hud-migrate:/src" -w /src \
-  -v hud-otelcol-gomod:/go/pkg/mod -v hud-otelcol-gocache:/root/.cache/go-build "$GO_IMAGE" go test ./...
+  -v hud-otelcol-gomod:/go/pkg/mod -v hud-otelcol-gocache:/root/.cache/go-build "$GO_IMAGE" go test -count=1 ./...
 
 echo "--- ClickStack collector: two deltas of a counter and of a scale-2 exponential histogram, one log"
 docker run -d --name smoke-clickstack --network $NET -p 14319:4318 -v "$DIR:/cfg:ro" -e EXPORT_INTERVAL=2s \
