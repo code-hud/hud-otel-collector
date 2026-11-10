@@ -1,26 +1,36 @@
 #!/usr/bin/env bash
 # Five fake pods (three on deployment v1, two on v2) send deltas concurrently. Function metrics must merge
 # into one Prometheus series per deployment holding its sum; flow and process metrics must stay one series per pod.
+# Then the ClickStack path: hud-migrate creates the schema, and deltas, an exponential histogram and a log
+# sent through test/clickstack.yaml must come out of PromQL and hud.otel_logs exactly.
 set -euo pipefail
 
 IMAGE=${IMAGE:-hud-otelcol:dev}
 PROM_IMAGE=${PROM_IMAGE:-prom/prometheus:v3.7.3}
+CLICKHOUSE_IMAGE=${CLICKHOUSE_IMAGE:-clickhouse/clickhouse-server:26.10}
+GO_IMAGE=${GO_IMAGE:-golang:1.26}
 NET=hud-otelcol-smoke
 DIR=$(cd "$(dirname "$0")" && pwd)
+PLAYGROUND=$DIR/../playground/clickstack
 
-cleanup() { docker rm -f smoke-collector smoke-prometheus >/dev/null 2>&1 || true; docker network rm $NET >/dev/null 2>&1 || true; }
+cleanup() {
+  docker rm -f smoke-collector smoke-prometheus smoke-clickhouse smoke-clickstack >/dev/null 2>&1 || true
+  docker network rm $NET >/dev/null 2>&1 || true
+}
 trap cleanup EXIT
 cleanup
 
 echo "--- components"
 components=$(docker run --rm "$IMAGE" components)
-for c in otlp batch filter transform delta_to_cumulative interval prometheus_remote_write sigv4auth; do
+for c in otlp batch filter transform delta_to_cumulative interval prometheus_remote_write sigv4auth clickhouse basicauth; do
   grep -q "name: $c\$" <<<"$components" || { echo "missing component: $c"; exit 1; }
 done
 
-echo "--- validate AMP config"
+echo "--- validate AMP and ClickStack configs"
 docker run --rm -v "$DIR:/cfg:ro" -e AWS_ACCESS_KEY_ID=dummy -e AWS_SECRET_ACCESS_KEY=dummy \
   "$IMAGE" validate --config /cfg/amp.yaml
+docker run --rm -v "$DIR:/cfg:ro" -e CLICKHOUSE_ENDPOINT=http://localhost:8123 -e CLICKHOUSE_USER=u -e CLICKHOUSE_PASSWORD=p \
+  "$IMAGE" validate --config /cfg/clickstack.yaml
 
 echo "--- start Prometheus and collector"
 docker network create $NET >/dev/null
@@ -72,14 +82,79 @@ checks=(
   'count(process_memory_usage{instance=~"pod-.*"})=5'
 )
 
-for _ in $(seq 30); do
-  failed=()
-  for c in "${checks[@]}"; do
-    got=$(query "${c%=*}"); [ "$got" = "${c##*=}" ] || failed+=("${c%=*}: got ${got:-none}, want ${c##*=}")
+# poll <query function> <collector container> <query=want>...: retries until every query returns its value
+poll() {
+  local q=$1 container=$2 failed=() c got; shift 2
+  for _ in $(seq 30); do
+    failed=()
+    for c in "$@"; do
+      got=$($q "${c%=*}"); [ "$got" = "${c##*=}" ] || failed+=("${c%=*}: got ${got:-none}, want ${c##*=}")
+    done
+    [ ${#failed[@]} = 0 ] && { echo "PASS: $# checks"; return; }
+    sleep 1
   done
-  [ ${#failed[@]} = 0 ] && { echo "PASS: ${#checks[@]} checks"; exit 0; }
-  sleep 1
+  printf 'FAIL: %s\n' "${failed[@]}"
+  docker logs "$container" | tail -30
+  exit 1
+}
+poll query smoke-collector "${checks[@]}"
+
+echo "--- ClickStack: ClickHouse with the playground's TimeSeries config and setup script"
+docker run -d --name smoke-clickhouse --network $NET -p 18123:8123 \
+  -e CLICKHOUSE_PASSWORD=admin-pass -e CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1 \
+  -v "$PLAYGROUND/clickhouse/prometheus.xml:/etc/clickhouse-server/config.d/prometheus.xml:ro" \
+  -v "$PLAYGROUND/setup.sql:/docker-entrypoint-initdb.d/setup.sql:ro" "$CLICKHOUSE_IMAGE" >/dev/null
+# The image runs setup.sql on a temporary server, then restarts it
+for _ in $(seq 60); do
+  [ "$(curl -s -u hud_backend:Backend-pass-1234 localhost:18123 --data-binary 'SELECT 1')" = 1 ] && break; sleep 1
 done
-printf 'FAIL: %s\n' "${failed[@]}"
-docker logs smoke-collector | tail -30
-exit 1
+MIGRATOR=(-e CLICKHOUSE_ENDPOINT=tcp://smoke-clickhouse:9000 -e CLICKHOUSE_USER=hud_migrator -e CLICKHOUSE_PASSWORD=Migrator-pass-1234)
+migrate() { docker run --rm --network $NET "${MIGRATOR[@]}" --entrypoint /hud-migrate "$IMAGE" "$@"; }
+
+echo "--- hud-migrate: HUD_SCHEMA_MANAGED=false doesn't connect, 4 concurrent up, once, status, go test"
+docker run --rm -e HUD_SCHEMA_MANAGED=false --entrypoint /hud-migrate "$IMAGE" up
+pids=(); for _ in 1 2 3 4; do migrate up & pids+=($!); done
+for p in "${pids[@]}"; do wait "$p"; done
+migrate once
+migrate status | grep -q "^hud schema version 1 " || { migrate status; exit 1; }
+docker run --rm --network $NET "${MIGRATOR[@]}" -v "$DIR/../hud-migrate:/src" -w /src \
+  -v hud-otelcol-gomod:/go/pkg/mod -v hud-otelcol-gocache:/root/.cache/go-build "$GO_IMAGE" go test ./...
+
+echo "--- ClickStack collector: two deltas of a counter and of a scale-2 exponential histogram, one log"
+docker run -d --name smoke-clickstack --network $NET -p 14319:4318 -v "$DIR:/cfg:ro" -e EXPORT_INTERVAL=2s \
+  -e CLICKHOUSE_ENDPOINT=http://smoke-clickhouse:8123 -e CLICKHOUSE_USER=hud_collector -e CLICKHOUSE_PASSWORD=Collector-pass-1234 \
+  "$IMAGE" --config /cfg/clickstack.yaml >/dev/null
+for _ in $(seq 30); do curl -s -o /dev/null localhost:14319 && break; sleep 1; done
+
+# Buckets (2^(k/4), 2^((k+1)/4)] s for k = -14..-12 hold 1, 2 and 2 per delta, so per delta the classic bucket
+# le=0.0884 (just above 2^(-14/4)) holds 0, le=0.125 holds 3 and le=0.177 holds 5
+RESOURCE='{"attributes":[{"key":"service.name","value":{"stringValue":"smoke"}},{"key":"service.instance.id","value":{"stringValue":"pod-a"}}]}'
+for r in 1 2; do
+  start=$(((BASE + r) * 1000000000)) end=$(((BASE + r + 1) * 1000000000))
+  curl -sf -X POST localhost:14319/v1/metrics -H 'Content-Type: application/json' -d @- >/dev/null <<EOF
+{"resourceMetrics":[{"resource":$RESOURCE,"scopeMetrics":[{"metrics":[
+  {"name":"hud.flow.messages","sum":{"aggregationTemporality":1,"isMonotonic":true,"dataPoints":[{"asInt":"1","startTimeUnixNano":"$start","timeUnixNano":"$end"}]}},
+  {"name":"code.flow.duration","unit":"s","exponentialHistogram":{"aggregationTemporality":1,"dataPoints":[{"startTimeUnixNano":"$start","timeUnixNano":"$end",
+    "count":"5","sum":0.55,"scale":2,"zeroCount":"0","positive":{"offset":-14,"bucketCounts":["1","2","2"]}}]}}]}]}]}
+EOF
+done
+curl -sf -X POST localhost:14319/v1/logs -H 'Content-Type: application/json' -d @- >/dev/null <<EOF
+{"resourceLogs":[{"resource":$RESOURCE,"scopeLogs":[{"logRecords":[
+  {"timeUnixNano":"$((BASE * 1000000000))","eventName":"hud.forensic","severityText":"ERROR","body":{"stringValue":"{}"}}]}]}]}
+EOF
+
+# As hud_backend, the read-only user Hud's backend gets
+promql() {
+  curl -s -u hud_backend:Backend-pass-1234 -G localhost:18123/prometheus/api/v1/query --data-urlencode table=hud.metrics \
+    --data-urlencode "query=$1" | sed -n 's/.*"value":\[[^,]*,"\([^"]*\)"\].*/\1/p'
+}
+sql() { curl -s -u hud_backend:Backend-pass-1234 localhost:18123 --data-binary "$1"; }
+poll promql smoke-clickstack \
+  'sum(hud_flow_messages_total)=2' \
+  'sum(code_flow_duration_seconds_count)=10' \
+  'sum(code_flow_duration_seconds_bucket{le="0.08838843603666609"})=0' \
+  'sum(code_flow_duration_seconds_bucket{le="0.125000125"})=6' \
+  'sum(code_flow_duration_seconds_bucket{le="0.17677687207333218"})=10' \
+  'sum(code_flow_duration_seconds_bucket{le="+Inf"})=10' \
+  'count((histogram_quantile(0.5, sum by (le) (code_flow_duration_seconds_bucket)) > 0.11) < 0.125)=1'
+poll sql smoke-clickstack "SELECT count() FROM hud.otel_logs WHERE EventName = 'hud.forensic' AND ServiceName = 'smoke'=1"

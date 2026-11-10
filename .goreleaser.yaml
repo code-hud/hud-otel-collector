@@ -20,9 +20,25 @@ builds:
     flags: [-trimpath]
     ldflags: [-s -w]
     tags: [grpcnotrace]
+  - id: hud-migrate
+    dir: hud-migrate
+    binary: hud-migrate
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags: ["-s -w -X main.version={{ .Version }}"]
 
 archives:
-  - name_template: "{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+  - id: hud-otelcol
+    ids: [hud-otelcol]
+    name_template: "{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+  - id: hud-migrate
+    ids: [hud-migrate]
+    name_template: "{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     formats: [tar.gz]
     format_overrides:
       - goos: windows
