@@ -1,6 +1,8 @@
 # ClickStack export: the AMP pipeline (test/amp.yaml) remote-writing into the metrics TimeSeries table, and logs
 # through the clickhouse exporter into otel_logs, both in HUD_CLICKHOUSE_DATABASE (default hud_otel). hud-migrate
 # creates the database and tables; CLICKHOUSE_USER only needs INSERT on it.
+# CLICKHOUSE_ENDPOINT is scheme://host:port (https://<service>:8443 on Cloud), with no path, query or trailing slash:
+# the remote-write URL is built by appending to it. hud-migrate accepts the same value.
 extensions:
   health_check:
     endpoint: 0.0.0.0:13133
@@ -37,6 +39,8 @@ processors:
 exporters:
   prometheus_remote_write:
     endpoint: ${env:CLICKHOUSE_ENDPOINT}/prometheus/api/v1/write?database=${env:HUD_CLICKHOUSE_DATABASE:-hud_otel}&table=metrics
+    tls:
+      insecure_skip_verify: ${env:CLICKHOUSE_TLS_INSECURE_SKIP_VERIFY:-false}
     auth:
       authenticator: basicauth/clickhouse
   clickhouse:
@@ -46,6 +50,8 @@ exporters:
     database: ${env:HUD_CLICKHOUSE_DATABASE:-hud_otel}
     logs_table_name: otel_logs
     create_schema: false
+    tls:
+      insecure_skip_verify: ${env:CLICKHOUSE_TLS_INSECURE_SKIP_VERIFY:-false}
 
 service:
   extensions: [health_check, basicauth/clickhouse]

@@ -1,0 +1,12 @@
+<!-- Smoke test only: HTTPS on 8443 with the self-signed certificate test/smoke.sh generates. -->
+<clickhouse>
+    <https_port>8443</https_port>
+    <openSSL>
+        <server>
+            <certificateFile>/etc/clickhouse-server/certs/cert.pem</certificateFile>
+            <privateKeyFile>/etc/clickhouse-server/certs/key.pem</privateKeyFile>
+            <verificationMode>none</verificationMode>
+            <loadDefaultCAFile>false</loadDefaultCAFile>
+        </server>
+    </openSSL>
+</clickhouse>

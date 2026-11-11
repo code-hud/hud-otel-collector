@@ -14,11 +14,13 @@ DIR=$(cd "$(dirname "$0")" && pwd)
 PLAYGROUND=$DIR/../playground/clickstack
 
 cleanup() {
-  docker rm -f smoke-collector smoke-prometheus smoke-clickhouse smoke-clickstack >/dev/null 2>&1 || true
+  docker rm -f smoke-collector smoke-prometheus smoke-clickhouse smoke-clickstack smoke-clickstack-tls >/dev/null 2>&1 || true
   docker network rm $NET >/dev/null 2>&1 || true
+  [ -z "${TLS_DIR:-}" ] || rm -rf "$TLS_DIR"
 }
 trap cleanup EXIT
 cleanup
+TLS_DIR=$(mktemp -d)
 
 echo "--- components"
 components=$(docker run --rm "$IMAGE" components)
@@ -106,9 +108,14 @@ SETUP=(-v "$PLAYGROUND/setup.sh:/docker-entrypoint-initdb.d/setup.sh:ro" -v "$PL
 out=$(docker run --rm "${SETUP[@]}" -e "HUD_CLICKHOUSE_DATABASE=x; DROP USER y" \
   --entrypoint /docker-entrypoint-initdb.d/setup.sh "$CLICKHOUSE_IMAGE" 2>&1 || true)
 grep -q "not a plain identifier" <<<"$out" || { echo "FAIL: setup.sh took an unsafe database name: $out"; exit 1; }
+# HTTPS on 8443 too, with a self-signed certificate, for the TLS checks at the end
+docker run --rm --user "$(id -u):$(id -g)" -v "$TLS_DIR:/out" "$GO_IMAGE" openssl req -x509 -newkey rsa:2048 -nodes \
+  -subj /CN=smoke-clickhouse -days 1 -keyout /out/key.pem -out /out/cert.pem 2>/dev/null
+chmod 755 "$TLS_DIR" && chmod 644 "$TLS_DIR"/*.pem
 docker run -d --name smoke-clickhouse --network $NET -p 18123:8123 \
   -e CLICKHOUSE_PASSWORD=admin-pass -e CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1 -e HUD_CLICKHOUSE_DATABASE=$DB \
   -v "$PLAYGROUND/clickhouse/prometheus.xml:/etc/clickhouse-server/config.d/prometheus.xml:ro" \
+  -v "$DIR/clickhouse-tls.xml:/etc/clickhouse-server/config.d/tls.xml:ro" -v "$TLS_DIR:/etc/clickhouse-server/certs:ro" \
   "${SETUP[@]}" "$CLICKHOUSE_IMAGE" >/dev/null
 # The image runs setup.sh on a temporary server, then restarts it
 for _ in $(seq 60); do
@@ -170,3 +177,23 @@ poll promql smoke-clickstack \
   'sum(code_flow_duration_seconds_bucket{le="+Inf"})=10' \
   'count((histogram_quantile(0.5, sum by (le) (code_flow_duration_seconds_bucket)) > 0.11) < 0.125)=1'
 poll sql smoke-clickstack "SELECT count() FROM $DB.otel_logs WHERE EventName = 'hud.forensic' AND ServiceName = 'smoke'=1"
+
+echo "--- TLS: hud-migrate and the collector on the https endpoint form Cloud uses (https://host:8443, trailing slash ok for hud-migrate)"
+TLS=(-e CLICKHOUSE_TLS_INSECURE_SKIP_VERIFY=true -e HUD_CLICKHOUSE_DATABASE=$DB)
+docker run --rm --network $NET -e CLICKHOUSE_ENDPOINT=https://smoke-clickhouse:8443/ -e CLICKHOUSE_USER=hud_migrator \
+  -e CLICKHOUSE_PASSWORD=Migrator-pass-1234 "${TLS[@]}" --entrypoint /hud-migrate "$IMAGE" up
+docker run -d --name smoke-clickstack-tls --network $NET -p 14320:4318 -v "$DIR:/cfg:ro" -e EXPORT_INTERVAL=2s "${TLS[@]}" \
+  -e CLICKHOUSE_ENDPOINT=https://smoke-clickhouse:8443 -e CLICKHOUSE_USER=hud_collector -e CLICKHOUSE_PASSWORD=Collector-pass-1234 \
+  "$IMAGE" --config /cfg/clickstack.yaml >/dev/null
+for _ in $(seq 30); do curl -s -o /dev/null localhost:14320 && break; sleep 1; done
+TLS_RESOURCE='{"attributes":[{"key":"service.name","value":{"stringValue":"smoke-tls"}},{"key":"service.instance.id","value":{"stringValue":"pod-tls"}}]}'
+curl -sf -X POST localhost:14320/v1/metrics -H 'Content-Type: application/json' -d @- >/dev/null <<EOF
+{"resourceMetrics":[{"resource":$TLS_RESOURCE,"scopeMetrics":[{"metrics":[
+  {"name":"hud.flow.messages","sum":{"aggregationTemporality":1,"isMonotonic":true,"dataPoints":[{"asInt":"3","startTimeUnixNano":"$((BASE * 1000000000))","timeUnixNano":"$(((BASE + 1) * 1000000000))"}]}}]}]}]}
+EOF
+curl -sf -X POST localhost:14320/v1/logs -H 'Content-Type: application/json' -d @- >/dev/null <<EOF
+{"resourceLogs":[{"resource":$TLS_RESOURCE,"scopeLogs":[{"logRecords":[
+  {"timeUnixNano":"$((BASE * 1000000000))","eventName":"hud.forensic","severityText":"INFO","body":{"stringValue":"{}"}}]}]}]}
+EOF
+poll promql smoke-clickstack-tls 'sum(hud_flow_messages_total{job="smoke-tls"})=3'
+poll sql smoke-clickstack-tls "SELECT count() FROM $DB.otel_logs WHERE ServiceName = 'smoke-tls'=1"
