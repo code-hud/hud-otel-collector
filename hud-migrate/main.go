@@ -3,8 +3,9 @@
 //	hud-migrate [up]  re-applies every schema/*.sql file on each start. The files only create what is missing
 //	                  (TestSchemaIsCreateOnly), so concurrent runs (one init container per collector replica) are safe.
 //
-// Environment: CLICKHOUSE_ENDPOINT (a clickhouse-go DSN: tcp://, clickhouse://, http:// or https://),
-// CLICKHOUSE_USER, CLICKHOUSE_PASSWORD, HUD_CLICKHOUSE_DATABASE (default hud_otel, ${DATABASE} in the schema files),
+// Environment: CLICKHOUSE_ENDPOINT (a clickhouse-go DSN: tcp://, clickhouse://, http:// or https://; the
+// collector's endpoint works as is), CLICKHOUSE_USER, CLICKHOUSE_PASSWORD, CLICKHOUSE_TLS_INSECURE_SKIP_VERIFY,
+// HUD_CLICKHOUSE_DATABASE (default hud_otel, ${DATABASE} in the schema files),
 // HUD_LOGS_TTL_DAYS (default 30, only used when otel_logs is created). HUD_SCHEMA_MANAGED=false makes it exit
 // without connecting, for customers who run the migrations themselves.
 package main
@@ -17,6 +18,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"net/url"
 	"os"
 	"path"
 	"regexp"
@@ -77,7 +79,11 @@ func open() (*sql.DB, error) {
 	if endpoint == "" {
 		return nil, errors.New("CLICKHOUSE_ENDPOINT is required")
 	}
-	opts, err := clickhouse.ParseDSN(endpoint)
+	dsn, err := buildDSN(endpoint, os.Getenv("CLICKHOUSE_TLS_INSECURE_SKIP_VERIFY") == "true")
+	if err != nil {
+		return nil, err
+	}
+	opts, err := clickhouse.ParseDSN(dsn)
 	if err != nil {
 		return nil, err
 	}
@@ -88,6 +94,26 @@ func open() (*sql.DB, error) {
 		opts.Auth.Password = p
 	}
 	return clickhouse.OpenDB(opts), nil
+}
+
+// buildDSN turns the endpoint the collector also uses (https://host:8443, no query string) into a clickhouse-go
+// DSN: https implies secure=true, as in the clickhouse exporter, unless the endpoint sets secure itself. The path is
+// dropped because clickhouse-go would take it as the default database, which may not exist yet.
+func buildDSN(endpoint string, skipVerify bool) (string, error) {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return "", fmt.Errorf("CLICKHOUSE_ENDPOINT: %w", err)
+	}
+	u.Path, u.RawPath = "", ""
+	q := u.Query()
+	if u.Scheme == "https" && !q.Has("secure") {
+		q.Set("secure", "true")
+	}
+	if skipVerify && !q.Has("skip_verify") {
+		q.Set("skip_verify", "true")
+	}
+	u.RawQuery = q.Encode()
+	return u.String(), nil
 }
 
 // Same budget as ClickStack's migrate: 5 attempts, for a server that is still starting.

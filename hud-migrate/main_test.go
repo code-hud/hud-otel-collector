@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/ClickHouse/clickhouse-go/v2"
 )
 
 var (
@@ -99,6 +101,48 @@ func TestDatabaseName(t *testing.T) {
 		t.Setenv("HUD_CLICKHOUSE_DATABASE", env)
 		if got, err := databaseName(); got != want || (err == nil) != (want != "") {
 			t.Errorf("HUD_CLICKHOUSE_DATABASE=%q: got %q, %v", env, got, err)
+		}
+	}
+}
+
+func TestBuildDSN(t *testing.T) {
+	for _, c := range []struct {
+		endpoint   string
+		skipVerify bool
+		protocol   clickhouse.Protocol
+		tls        bool
+		err        bool
+	}{
+		{endpoint: "tcp://clickhouse:9000", protocol: clickhouse.Native},
+		{endpoint: "http://clickhouse:8123", protocol: clickhouse.HTTP},
+		{endpoint: "https://svc.eu-central-1.aws.clickhouse.cloud:8443", protocol: clickhouse.HTTP, tls: true},
+		{endpoint: "https://svc.eu-central-1.aws.clickhouse.cloud:8443/", protocol: clickhouse.HTTP, tls: true},
+		{endpoint: "https://svc:8443/prometheus/api/v1/write", protocol: clickhouse.HTTP, tls: true},
+		{endpoint: "https://svc:8443?secure=true&dial_timeout=5s", protocol: clickhouse.HTTP, tls: true},
+		{endpoint: "https://svc:8443?secure=false", err: true},
+		{endpoint: "https://svc:8443", skipVerify: true, protocol: clickhouse.HTTP, tls: true},
+		{endpoint: "tcp://svc:9440?secure=true", skipVerify: true, protocol: clickhouse.Native, tls: true},
+	} {
+		dsn, err := buildDSN(c.endpoint, c.skipVerify)
+		if err != nil {
+			t.Fatalf("%s: %v", c.endpoint, err)
+		}
+		opts, err := clickhouse.ParseDSN(dsn)
+		if c.err {
+			if err == nil {
+				t.Errorf("%s: parsed %s, want an error", c.endpoint, dsn)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s: %s: %v", c.endpoint, dsn, err)
+			continue
+		}
+		if opts.Protocol != c.protocol || (opts.TLS != nil) != c.tls || opts.Auth.Database != "" {
+			t.Errorf("%s: %s: protocol %v, TLS %v, database %q", c.endpoint, dsn, opts.Protocol, opts.TLS != nil, opts.Auth.Database)
+		}
+		if c.tls && opts.TLS.InsecureSkipVerify != c.skipVerify {
+			t.Errorf("%s: skip verify %v, want %v", c.endpoint, opts.TLS.InsecureSkipVerify, c.skipVerify)
 		}
 	}
 }

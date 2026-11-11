@@ -67,12 +67,18 @@ a `TimeSeries` table queried with PromQL, and logs go through the `clickhouse` e
 exponential histograms are converted to classic buckets first, because ClickHouse drops native histograms.
 `playground/clickstack/` runs it end to end with HyperDX and the node SDK.
 
+The collector's `CLICKHOUSE_ENDPOINT` is the HTTP interface as `scheme://host:port`, e.g.
+`https://<service>.<region>.aws.clickhouse.cloud:8443` on ClickHouse Cloud, with no path, query string or trailing
+slash: the remote-write URL is built by appending `/prometheus/api/v1/write?...` to it. `hud-migrate` accepts the same
+value (an `https://` endpoint implies `secure=true`, and a path is ignored), so one variable can serve both.
+
 `hud-migrate` creates the database and its schema, like ClickStack's `migrate` (the customer's setup script only
 creates users and grants). It runs as an init container before the collector, with DDL credentials the collector
 never gets, and re-applies every embedded `hud-migrate/schema/*.sql` on each start. Running it from every replica at
 once is safe.
 
 Environment: `CLICKHOUSE_ENDPOINT` (`tcp://`, `http://` or `https://`), `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`,
+`CLICKHOUSE_TLS_INSECURE_SKIP_VERIFY` (`true` for a self-signed certificate; the collector config reads it too),
 `HUD_CLICKHOUSE_DATABASE` (default `hud_otel`; the collector config reads the same variable, like ClickStack's
 `HYPERDX_OTEL_EXPORTER_CLICKHOUSE_DATABASE`), `HUD_LOGS_TTL_DAYS` (default 30; only applies when `otel_logs` is
 created, later changes don't touch an existing table). With `HUD_SCHEMA_MANAGED=false` it exits without connecting, for customers who run the same SQL themselves.
