@@ -1,4 +1,5 @@
-# ClickStack export: the AMP pipeline (test/amp.yaml) remote-writing into the metrics TimeSeries table, and logs
+# ClickStack export: the merge-mode metrics pipelines of hud-o11y-resources' deploy configs (deploy/helm/values.yaml,
+# deploy/aws/ecs-fargate.yaml; processors copied as is) remote-writing into the metrics TimeSeries table, and logs
 # through the clickhouse exporter into otel_logs, both in HUD_CLICKHOUSE_DATABASE (default hud_otel). hud-migrate
 # creates the database and tables; CLICKHOUSE_USER only needs INSERT on it.
 # CLICKHOUSE_ENDPOINT is scheme://host:port (https://<service>:8443 on Cloud), with no path, query or trailing slash:
@@ -23,6 +24,41 @@ processors:
   memory_limiter:
     check_interval: 1s
     limit_percentage: 80
+    spike_limit_percentage: 20
+  # Function metrics (code.function.*) merge across app pods; everything else (flow, process) stays per pod.
+  filter/functions:
+    metrics:
+      metric: ['not IsMatch(name, "^code\\.function\\.")']
+  filter/per_pod:
+    metrics:
+      metric: ['IsMatch(name, "^code\\.function\\.")']
+  # Serializes concurrent requests; without it, re-stamped points can reach delta_to_cumulative out of order and be dropped.
+  batch: {}
+  # Drops per-pod resource attributes and moves the kept ones onto the data points, so they become labels and a
+  # stream's identity is its label set. Each collector pod writes only its own series.
+  transform/merge:
+    metric_statements:
+      - context: resource
+        statements:
+          - keep_keys(attributes, ["service.name", "service.namespace", "deployment.environment.name", "deployment.id", "k8s.namespace.name", "cloud.provider", "cloud.region", "telemetry.sdk.version", "hud.identity.version"])
+      - context: datapoint
+        statements:
+          - merge_maps(attributes, resource.attributes, "insert")
+          - delete_matching_keys(attributes, "^service\\.(name|namespace)$")
+      - context: resource
+        statements:
+          - keep_keys(attributes, ["service.name", "service.namespace"])
+          - set(attributes["service.instance.id"], "${env:HOSTNAME}")
+  # Copies the environment onto the data points so it becomes a label; the resource (target_info, job, instance) is unchanged.
+  transform/environment:
+    metric_statements:
+      - context: datapoint
+        statements:
+          - set(attributes["deployment.environment.name"], resource.attributes["deployment.environment.name"]) where resource.attributes["deployment.environment.name"] != nil
+  transform/restamp:
+    metric_statements:
+      - context: datapoint
+        statements: ["set(start_time, Now())", "set(time, Now())"]
   # ClickHouse silently drops native histograms (ClickHouse#122051), which is what the exporter makes of exponential
   # ones. The bounds are 2^(k/2) s for k = -20..12, times (1 + 1e-6): every bucket of the SDK's scale-2 grid,
   # (2^(j/4), 2^((j+1)/4)] s, falls inside one classic bucket, so the counts stay exact on a coarser grid. Bounds
@@ -33,6 +69,7 @@ processors:
         statements:
           - convert_exponential_histogram_to_histogram("upper", [0.0009765634765625, 0.0013810693130729076, 0.001953126953125, 0.0027621386261458152, 0.00390625390625, 0.0055242772522916305, 0.0078125078125, 0.011048554504583261, 0.015625015625, 0.022097109009166522, 0.03125003125, 0.044194218018333044, 0.0625000625, 0.08838843603666609, 0.125000125, 0.17677687207333218, 0.25000025, 0.35355374414666435, 0.5000005, 0.7071074882933287, 1.000001, 1.4142149765866574, 2.000002, 2.828429953173315, 4.000004, 5.65685990634663, 8.000008, 11.31371981269326, 16.000016, 22.62743962538652, 32.000032, 45.25487925077304, 64.000064]) where metric.type == METRIC_DATA_TYPE_EXPONENTIAL_HISTOGRAM
   delta_to_cumulative:
+    max_stale: 1h
   interval:
     interval: ${env:EXPORT_INTERVAL:-60s}
 
@@ -43,6 +80,12 @@ exporters:
       insecure_skip_verify: ${env:CLICKHOUSE_TLS_INSECURE_SKIP_VERIFY:-false}
     auth:
       authenticator: basicauth/clickhouse
+    # Every resource attribute becomes a label on every series, service_name included, as in Hud's AMP data.
+    # service.instance.id stays on the resource only: it is already the instance label. The deploy templates'
+    # exporter doesn't set this.
+    resource_constant_labels:
+      included: ["*"]
+      excluded: ["service.instance.id"]
   clickhouse:
     endpoint: ${env:CLICKHOUSE_ENDPOINT}
     username: ${env:CLICKHOUSE_USER}
@@ -56,9 +99,13 @@ exporters:
 service:
   extensions: [health_check, basicauth/clickhouse]
   pipelines:
-    metrics:
+    metrics/functions:
       receivers: [otlp]
-      processors: [memory_limiter, transform/classic, delta_to_cumulative, interval]
+      processors: [memory_limiter, filter/functions, batch, transform/merge, transform/restamp, transform/classic, delta_to_cumulative, interval]
+      exporters: [prometheus_remote_write]
+    metrics/per_pod:
+      receivers: [otlp]
+      processors: [memory_limiter, filter/per_pod, batch, transform/environment, transform/classic, delta_to_cumulative]
       exporters: [prometheus_remote_write]
     logs:
       receivers: [otlp]
