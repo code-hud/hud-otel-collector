@@ -139,7 +139,7 @@ done
 docker run --rm --network $NET "${MIGRATOR[@]}" -v "$DIR/../hud-migrate:/src" -w /src \
   -v hud-otelcol-gomod:/go/pkg/mod -v hud-otelcol-gocache:/root/.cache/go-build "$GO_IMAGE" go test -count=1 ./...
 
-echo "--- ClickStack collector: two deltas of a counter and of a scale-2 exponential histogram, one log"
+echo "--- ClickStack collector: two deltas of a counter and of a scale-2 exponential histogram, per pod and per function (merged), one log"
 docker run -d --name smoke-clickstack --network $NET -p 14319:4318 -v "$DIR:/cfg:ro" -e EXPORT_INTERVAL=2s \
   -e CLICKHOUSE_ENDPOINT=http://smoke-clickhouse:8123 -e CLICKHOUSE_USER=hud_collector -e CLICKHOUSE_PASSWORD=Collector-pass-1234 \
   -e HUD_CLICKHOUSE_DATABASE=$DB "$IMAGE" --config /cfg/clickstack.yaml >/dev/null
@@ -147,13 +147,18 @@ for _ in $(seq 30); do curl -s -o /dev/null localhost:14319 && break; sleep 1; d
 
 # Buckets (2^(k/4), 2^((k+1)/4)] s for k = -14..-12 hold 1, 2 and 2 per delta, so per delta the classic bucket
 # le=0.0884 (just above 2^(-14/4)) holds 0, le=0.125 holds 3 and le=0.177 holds 5
-RESOURCE='{"attributes":[{"key":"service.name","value":{"stringValue":"smoke"}},{"key":"service.instance.id","value":{"stringValue":"pod-a"}}]}'
+RESOURCE='{"attributes":[{"key":"service.name","value":{"stringValue":"smoke"}},{"key":"service.instance.id","value":{"stringValue":"pod-a"}},
+  {"key":"deployment.environment.name","value":{"stringValue":"smoke-env"}},{"key":"deployment.id","value":{"stringValue":"d1"}}]}'
+FUNCTION='"attributes":[{"key":"code.function.name","value":{"stringValue":"f"}}]'
 for r in 1 2; do
   start=$(((BASE + r) * 1000000000)) end=$(((BASE + r + 1) * 1000000000))
   curl -sf -X POST localhost:14319/v1/metrics -H 'Content-Type: application/json' -d @- >/dev/null <<EOF
 {"resourceMetrics":[{"resource":$RESOURCE,"scopeMetrics":[{"metrics":[
   {"name":"hud.flow.messages","sum":{"aggregationTemporality":1,"isMonotonic":true,"dataPoints":[{"asInt":"1","startTimeUnixNano":"$start","timeUnixNano":"$end"}]}},
   {"name":"code.flow.duration","unit":"s","exponentialHistogram":{"aggregationTemporality":1,"dataPoints":[{"startTimeUnixNano":"$start","timeUnixNano":"$end",
+    "count":"5","sum":0.55,"scale":2,"zeroCount":"0","positive":{"offset":-14,"bucketCounts":["1","2","2"]}}]}},
+  {"name":"code.function.calls","sum":{"aggregationTemporality":1,"isMonotonic":true,"dataPoints":[{$FUNCTION,"asInt":"1","startTimeUnixNano":"$start","timeUnixNano":"$end"}]}},
+  {"name":"code.function.call.duration","unit":"s","exponentialHistogram":{"aggregationTemporality":1,"dataPoints":[{$FUNCTION,"startTimeUnixNano":"$start","timeUnixNano":"$end",
     "count":"5","sum":0.55,"scale":2,"zeroCount":"0","positive":{"offset":-14,"bucketCounts":["1","2","2"]}}]}}]}]}]}
 EOF
 done
@@ -168,8 +173,17 @@ promql() {
     --data-urlencode "query=$1" | sed -n 's/.*"value":\[[^,]*,"\([^"]*\)"\].*/\1/p'
 }
 sql() { curl -s -u hud_backend:Backend-pass-1234 localhost:18123 --data-binary "$1"; }
+# Every resource attribute is a label, as in Hud's AMP data. Per pod: instance and service_instance_id are the pod's.
+# Per function: merged, both are the collector's hostname.
+COLLECTOR_HOST=$(docker inspect -f '{{.Config.Hostname}}' smoke-clickstack)
 poll promql smoke-clickstack \
   'sum(hud_flow_messages_total)=2' \
+  'sum(hud_flow_messages_total{job="smoke",service_name="smoke",instance="pod-a",service_instance_id="pod-a",deployment_environment_name="smoke-env",deployment_id="d1"})=2' \
+  'sum(code_function_calls_total{job="smoke",service_name="smoke",deployment_environment_name="smoke-env",deployment_id="d1",code_function_name="f"})=2' \
+  "count(code_function_calls_total{instance=\"$COLLECTOR_HOST\",service_instance_id=\"$COLLECTOR_HOST\"})=1" \
+  'count(target_info{job="smoke",instance="pod-a",deployment_id="d1",service_name="",service_instance_id=""})=1' \
+  'sum(code_function_call_duration_seconds_count{deployment_environment_name="smoke-env"})=10' \
+  'sum(code_function_call_duration_seconds_bucket{le="0.125000125"})=6' \
   'sum(code_flow_duration_seconds_count)=10' \
   'sum(code_flow_duration_seconds_bucket{le="0.08838843603666609"})=0' \
   'sum(code_flow_duration_seconds_bucket{le="0.125000125"})=6' \
