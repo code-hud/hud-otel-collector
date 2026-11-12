@@ -80,10 +80,12 @@ exporters:
       insecure_skip_verify: ${env:CLICKHOUSE_TLS_INSECURE_SKIP_VERIFY:-false}
     auth:
       authenticator: basicauth/clickhouse
-    # Every resource attribute becomes a label on every series, service_name and service_instance_id included, as in
-    # Hud's AMP data (target_info keeps all but those two). The deploy templates' exporter doesn't set this.
+    # Every resource attribute becomes a label on every series, service_name included, as in Hud's AMP data.
+    # service.instance.id stays on the resource only: it is already the instance label. The deploy templates'
+    # exporter doesn't set this.
     resource_constant_labels:
       included: ["*"]
+      excluded: ["service.instance.id"]
   clickhouse:
     endpoint: ${env:CLICKHOUSE_ENDPOINT}
     username: ${env:CLICKHOUSE_USER}

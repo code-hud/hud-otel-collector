@@ -67,8 +67,9 @@ hud-o11y-resources' deploy configs, processors copied as is) writing to ClickHou
 `hud_otel.metrics`, a `TimeSeries` table queried with PromQL, and logs go through the `clickhouse` exporter into
 `hud_otel.otel_logs`. Two differences from the deploy configs: the SDK's exponential histograms are converted to classic
 buckets before `delta_to_cumulative`, because ClickHouse drops native histograms (so PromQL uses `_bucket`/`_count`, not
-`histogram_count()`), and the exporter turns every resource attribute into a label (`resource_constant_labels`), which
-gives the label sets of Hud's AMP data, `service_instance_id` included. `playground/clickstack/` runs it end to end
+`histogram_count()`), and the exporter turns every resource attribute but `service.instance.id` into a label
+(`resource_constant_labels`), which gives the label sets of Hud's AMP data minus `service_instance_id`, a copy of
+`instance`. `playground/clickstack/` runs it end to end
 with HyperDX and the node SDK.
 
 The collector's `CLICKHOUSE_ENDPOINT` is the HTTP interface as `scheme://host:port`, e.g.

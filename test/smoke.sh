@@ -173,14 +173,13 @@ promql() {
     --data-urlencode "query=$1" | sed -n 's/.*"value":\[[^,]*,"\([^"]*\)"\].*/\1/p'
 }
 sql() { curl -s -u hud_backend:Backend-pass-1234 localhost:18123 --data-binary "$1"; }
-# Every resource attribute is a label, as in Hud's AMP data. Per pod: instance and service_instance_id are the pod's.
-# Per function: merged, both are the collector's hostname.
+# Every resource attribute but service.instance.id is a label, as in Hud's AMP data; that one is only the instance:
+# the pod's per pod, the collector's hostname for merged function series.
 COLLECTOR_HOST=$(docker inspect -f '{{.Config.Hostname}}' smoke-clickstack)
 poll promql smoke-clickstack \
   'sum(hud_flow_messages_total)=2' \
-  'sum(hud_flow_messages_total{job="smoke",service_name="smoke",instance="pod-a",service_instance_id="pod-a",deployment_environment_name="smoke-env",deployment_id="d1"})=2' \
-  'sum(code_function_calls_total{job="smoke",service_name="smoke",deployment_environment_name="smoke-env",deployment_id="d1",code_function_name="f"})=2' \
-  "count(code_function_calls_total{instance=\"$COLLECTOR_HOST\",service_instance_id=\"$COLLECTOR_HOST\"})=1" \
+  'sum(hud_flow_messages_total{job="smoke",service_name="smoke",instance="pod-a",service_instance_id="",deployment_environment_name="smoke-env",deployment_id="d1"})=2' \
+  "sum(code_function_calls_total{job=\"smoke\",service_name=\"smoke\",instance=\"$COLLECTOR_HOST\",service_instance_id=\"\",deployment_environment_name=\"smoke-env\",deployment_id=\"d1\",code_function_name=\"f\"})=2" \
   'count(target_info{job="smoke",instance="pod-a",deployment_id="d1",service_name="",service_instance_id=""})=1' \
   'sum(code_function_call_duration_seconds_count{deployment_environment_name="smoke-env"})=10' \
   'sum(code_function_call_duration_seconds_bucket{le="0.125000125"})=6' \
