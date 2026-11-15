@@ -47,7 +47,7 @@ sha256sum --ignore-missing -c checksums.txt
 ## Deploying to your AWS account
 
 The CloudFormation templates and Helm values live in
-[hud-o11y-resources](https://github.com/code-hud/hud-o11y-resources/blob/main/deploy/README.md).
+[hud-opensearch-resources](https://github.com/code-hud/hud-opensearch-resources/blob/main/deploy/README.md).
 
 ## Local development
 
