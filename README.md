@@ -57,25 +57,39 @@ Only Docker is required; Go runs in a container.
 make build   # OCB generates and compiles _build/hud-otelcol (linux, Docker host arch)
 make image   # hud-otelcol:dev
 make smoke   # five fake pods send deltas concurrently; expects one merged Prometheus series with the summed total,
-             # then runs hud-migrate and test/clickstack.yaml against ClickHouse and checks PromQL and otel_logs (database hud_otel_smoke)
+             # then runs hud-migrate and test/clickstack.yaml against ClickHouse and checks the SQL tables and otel_logs
+             # (database hud_otel_smoke)
 ```
 
 ## ClickStack
 
-`test/clickstack.yaml` is the AMP merge-mode pipeline (the `metrics/functions` and `metrics/per_pod` pipelines of
-hud-o11y-resources' deploy configs, processors copied as is) writing to ClickHouse: metrics are remote-written into
-`hud_otel.metrics`, a `TimeSeries` table queried with PromQL, and logs go through the `clickhouse` exporter into
-`hud_otel.otel_logs`. Two differences from the deploy configs: the SDK's exponential histograms are converted to classic
-buckets before `delta_to_cumulative`, because ClickHouse drops native histograms (so PromQL uses `_bucket`/`_count`, not
-`histogram_count()`), and the exporter turns every resource attribute but `service.instance.id` into a label
-(`resource_constant_labels`), which gives the label sets of Hud's AMP data minus `service_instance_id`, a copy of
-`instance`. `playground/clickstack/` runs it end to end
-with HyperDX and the node SDK.
+`test/clickstack.yaml` sends the SDK's metrics through the `clickhouse` exporter into the `ingest_*` tables of
+`hud_otel`, and logs into `hud_otel.otel_logs`. The `ingest_*` tables are `Null` tables: materialized views sum each insert
+into the tables below (`hud-migrate/schema/0002_sql.sql`) and the raw rows are not kept. The collector keeps no state (no
+pod merging, no `delta_to_cumulative`), so it scales out freely: it converts the SDK's exponential histograms to classic
+buckets and batches the inserts.
+
+| Tables | Grain | One row per (and what it sums) |
+| --- | --- | --- |
+| `flow_1m`, `flow_hourly` | 1 minute, hour | flow, status code, method, route, end reason, queue, deployment: runs, duration, queue latency (e2e), messages |
+| `session_1m`, `session_hourly` | 1 minute, hour | SDK session (`service.instance.id`) and its pod: last report, uptime, CPU, memory and its limit, event loop utilization |
+| `session_flow_1m`, `session_flow_hourly` | 1 minute, hour | session and flow: runs, 5xx runs, issues |
+| `issue_1m`, `issue_hourly` | 1 minute, hour | flow and issue fingerprint: issues |
+| `function_5m`, `function_hourly` | 5 minutes, hour | function, file, deployment: calls, errors, duration |
+| `site_5m`, `site_hourly` | 5 minutes, hour | function, caller, flow, content hash, error type, deployment: calls, errors, duration |
+| `labels` | | every environment, service, flow and function seen (the dashboards' selectors) |
+
+Each fine table rolls up into its hourly table. Fine tables keep `HUD_METRICS_FINE_TTL_DAYS` days (default 7), hourly
+tables keep everything. Every row has the environment (`deployment.environment.name`) and the service (`service.name`).
+Durations are counts per bucket of the `transform/classic` grid: `buckets[k]` counts durations up to
+`duration_bounds[k]` seconds and `buckets[34]` the rest, so any grain answers percentiles. Only deltas are summed (the
+SDK sends nothing else), except the process gauges and limits. The `metrics` `TimeSeries` table of `0001_init.sql` is
+still created but nothing writes to it. `playground/clickstack/` runs it end to end with HyperDX and the node SDK; the
+dashboards are in [hud-clickstack-resources](https://github.com/code-hud/hud-clickstack-resources).
 
 The collector's `CLICKHOUSE_ENDPOINT` is the HTTP interface as `scheme://host:port`, e.g.
-`https://<service>.<region>.aws.clickhouse.cloud:8443` on ClickHouse Cloud, with no path, query string or trailing
-slash: the remote-write URL is built by appending `/prometheus/api/v1/write?...` to it. `hud-migrate` accepts the same
-value (an `https://` endpoint implies `secure=true`, and a path is ignored), so one variable can serve both.
+`https://<service>.<region>.aws.clickhouse.cloud:8443` on ClickHouse Cloud. `hud-migrate` accepts the same value (an
+`https://` endpoint implies `secure=true`, and a path is ignored), so one variable can serve both.
 
 `hud-migrate` creates the database and its schema, like ClickStack's `migrate` (the customer's setup script only
 creates users and grants). It runs as an init container before the collector, with DDL credentials the collector
@@ -85,8 +99,9 @@ once is safe.
 Environment: `CLICKHOUSE_ENDPOINT` (`tcp://`, `http://` or `https://`), `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`,
 `CLICKHOUSE_TLS_INSECURE_SKIP_VERIFY` (`true` for a self-signed certificate; the collector config reads it too),
 `HUD_CLICKHOUSE_DATABASE` (default `hud_otel`; the collector config reads the same variable, like ClickStack's
-`HYPERDX_OTEL_EXPORTER_CLICKHOUSE_DATABASE`), `HUD_LOGS_TTL_DAYS` (default 30; only applies when `otel_logs` is
-created, later changes don't touch an existing table). With `HUD_SCHEMA_MANAGED=false` it exits without connecting, for customers who run the same SQL themselves.
+`HYPERDX_OTEL_EXPORTER_CLICKHOUSE_DATABASE`), `HUD_LOGS_TTL_DAYS` (default 30) and `HUD_METRICS_FINE_TTL_DAYS`
+(default 7, the 1- and 5-minute metric tables); both only apply when a table is created, later changes don't touch an
+existing table. With `HUD_SCHEMA_MANAGED=false` it exits without connecting, for customers who run the same SQL themselves.
 
 Rules for `hud-migrate/schema/*.sql`, as in ClickStack:
 

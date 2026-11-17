@@ -9,14 +9,11 @@ CREATE ROLE IF NOT EXISTS hud_read;    GRANT SELECT ON ${HUD_CLICKHOUSE_DATABASE
 CREATE ROLE IF NOT EXISTS hud_ddl;
 GRANT CREATE DATABASE, CREATE TABLE, CREATE VIEW, ALTER ADD COLUMN, SELECT, INSERT ON ${HUD_CLICKHOUSE_DATABASE}.* TO hud_ddl;
 
--- PromQL on TimeSeries needs the temporary-table grant (until ClickHouse#120724) and the time-series aggregate
--- functions; readonly = 1 would reject both.
+-- readonly = 2: HyperDX sets query settings (max_execution_time, ...) on its queries, which readonly = 1 rejects.
 CREATE SETTINGS PROFILE IF NOT EXISTS hud_read_profile SETTINGS
-  readonly = 2, max_execution_time = 60, max_memory_usage = 8000000000, max_threads = 8,
-  enable_time_series_aggregate_functions = 1 TO hud_read;
+  readonly = 2, max_execution_time = 60, max_memory_usage = 8000000000, max_threads = 8 TO hud_read;
 CREATE QUOTA IF NOT EXISTS hud_read_quota
   FOR INTERVAL 1 hour MAX queries = 20000, execution_time = 3600, read_bytes = 2000000000000 TO hud_read;
-GRANT CREATE TEMPORARY TABLE ON *.* TO hud_read;
 
 CREATE USER IF NOT EXISTS hud_collector IDENTIFIED WITH sha256_password BY 'Collector-pass-1234' DEFAULT ROLE hud_write;
 CREATE USER IF NOT EXISTS hud_migrator  IDENTIFIED WITH sha256_password BY 'Migrator-pass-1234' DEFAULT ROLE hud_ddl;
