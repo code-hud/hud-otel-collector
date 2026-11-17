@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Five fake pods (three on deployment v1, two on v2) send deltas concurrently. Function metrics must merge
 # into one Prometheus series per deployment holding its sum; flow and process metrics must stay one series per pod.
-# Then the ClickStack path: hud-migrate creates the schema, and deltas, an exponential histogram, a gauge and a log
-# sent through test/clickstack.yaml must come out of the SQL tables and otel_logs exactly.
+# Then the ClickStack path: hud-migrate creates the schema, and deltas (with a calling flow and an issue), an exponential
+# histogram, a gauge and a log sent through test/clickstack.yaml must come out of the SQL tables and otel_logs exactly.
 set -euo pipefail
 
 IMAGE=${IMAGE:-hud-otelcol:dev}
@@ -130,7 +130,7 @@ pids=(); for _ in 1 2 3 4; do migrate up & pids+=($!); done
 for p in "${pids[@]}"; do wait "$p"; done
 tables=$(curl -s -u hud_backend:Backend-pass-1234 localhost:18123 \
   --data-binary "SELECT groupArray(name) FROM (SELECT name FROM system.tables WHERE database = '$DB' AND name NOT LIKE '.inner%' ORDER BY name)")
-want="['duration_bounds','flow_1m','flow_1m_duration','flow_1m_e2e','flow_1m_messages','flow_hourly','flow_hourly_rollup',\
+want="['calling_flow_1m','calling_flow_1m_runs','calling_flow_hourly','calling_flow_hourly_rollup','duration_bounds','flow_1m','flow_1m_duration','flow_1m_e2e','flow_1m_messages','flow_hourly','flow_hourly_rollup',\
 'function_5m','function_5m_calls','function_5m_duration','function_hourly','function_hourly_rollup','ingest_exponential_histogram',\
 'ingest_gauge','ingest_histogram','ingest_sum','ingest_summary','issue_1m','issue_1m_issues','issue_hourly','issue_hourly_rollup',\
 'labels','labels_flows','labels_functions','labels_sessions','metrics','otel_logs','session_1m','session_1m_gauge','session_1m_sum',\
@@ -156,6 +156,10 @@ RESOURCE='{"attributes":[{"key":"service.name","value":{"stringValue":"smoke"}},
   {"key":"deployment.environment.name","value":{"stringValue":"smoke-env"}},{"key":"deployment.id","value":{"stringValue":"d1"}}]}'
 FUNCTION='"attributes":[{"key":"code.function.name","value":{"stringValue":"f"}},{"key":"code.flow.name","value":{"stringValue":"http|/x|get"}}]'
 FLOW='"attributes":[{"key":"code.flow.name","value":{"stringValue":"http|/x|get"}},{"key":"code.flow.type","value":{"stringValue":"http"}},{"key":"http.response.status_code","value":{"intValue":"500"}}]'
+CALLER='"attributes":[{"key":"code.flow.name","value":{"stringValue":"http|/x|get"}},{"key":"hud.parent.service.name","value":{"stringValue":"caller"}},
+  {"key":"hud.parent.flow.name","value":{"stringValue":"kafka|t|g"}},{"key":"hud.root.service.name","value":{"stringValue":"edge"}},{"key":"hud.root.flow.name","value":{"stringValue":"http|/y|post"}}]'
+ISSUE='"attributes":[{"key":"code.flow.name","value":{"stringValue":"http|/x|get"}},{"key":"issue.fingerprint","value":{"stringValue":"fp"}},
+  {"key":"hud.issue.caught","value":{"boolValue":false}},{"key":"hud.issue.user_error","value":{"stringValue":"card declined"}}]'
 for r in 1 2; do
   start=$(((BASE + r) * 1000000000)) end=$(((BASE + r + 1) * 1000000000))
   curl -sf -X POST localhost:14319/v1/metrics -H 'Content-Type: application/json' -d @- >/dev/null <<EOF
@@ -164,6 +168,8 @@ for r in 1 2; do
   {"name":"code.flow.duration","unit":"s","exponentialHistogram":{"aggregationTemporality":1,"dataPoints":[{$FLOW,"startTimeUnixNano":"$start","timeUnixNano":"$end",
     "count":"5","sum":0.55,"scale":2,"zeroCount":"0","positive":{"offset":-14,"bucketCounts":["1","2","2"]}}]}},
   {"name":"process.uptime","unit":"s","gauge":{"dataPoints":[{"asDouble":$((40 + r)),"timeUnixNano":"$end"}]}},
+  {"name":"hud.flow.calling_flows","sum":{"aggregationTemporality":1,"isMonotonic":true,"dataPoints":[{$CALLER,"asInt":"4","startTimeUnixNano":"$start","timeUnixNano":"$end"}]}},
+  {"name":"hud.flow.issues","sum":{"aggregationTemporality":1,"isMonotonic":true,"dataPoints":[{$ISSUE,"asInt":"1","startTimeUnixNano":"$start","timeUnixNano":"$end"}]}},
   {"name":"code.function.calls","sum":{"aggregationTemporality":1,"isMonotonic":true,"dataPoints":[{$FUNCTION,"asInt":"1","startTimeUnixNano":"$start","timeUnixNano":"$end"}]}},
   {"name":"code.function.call.duration","unit":"s","exponentialHistogram":{"aggregationTemporality":1,"dataPoints":[{$FUNCTION,"startTimeUnixNano":"$start","timeUnixNano":"$end",
     "count":"5","sum":0.55,"scale":2,"zeroCount":"0","positive":{"offset":-14,"bucketCounts":["1","2","2"]}}]}}]}]}]}
@@ -192,6 +198,10 @@ poll sql smoke-clickstack \
   "SELECT arrayCumSum(sumForEachMerge(buckets))[15] FROM $DB.function_5m WHERE function = 'f'=6" \
   "SELECT sum(calls) FROM $DB.site_hourly WHERE function = 'f' AND flow = 'http|/x|get'=2" \
   "SELECT max(uptime) FROM $DB.session_1m WHERE instance = 'pod-a' AND env = 'smoke-env' AND last_seen > 0=42" \
+  "SELECT sum(runs) FROM $DB.calling_flow_1m WHERE flow = 'http|/x|get' AND parent_service = 'caller' AND parent_flow = 'kafka|t|g' AND root_service = 'edge' AND root_flow = 'http|/y|post'=8" \
+  "SELECT sum(runs) FROM $DB.calling_flow_hourly WHERE parent_service = 'caller'=8" \
+  "SELECT sum(issues) FROM $DB.issue_hourly WHERE fingerprint = 'fp' AND caught = 'false' AND user_error = 'card declined'=2" \
+  "SELECT sum(issues) FROM $DB.session_flow_1m WHERE instance = 'pod-a'=2" \
   "SELECT groupArray(flow || '/' || function) FROM (SELECT DISTINCT flow, function FROM $DB.labels WHERE service = 'smoke' ORDER BY ALL)=['/','http|/x|get/','http|/x|get/f']"
 poll sql smoke-clickstack "SELECT count() FROM $DB.otel_logs WHERE EventName = 'hud.forensic' AND ServiceName = 'smoke'=1"
 

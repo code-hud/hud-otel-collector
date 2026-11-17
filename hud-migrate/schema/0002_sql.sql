@@ -13,7 +13,8 @@
 --   flow     code.flow.duration, hud.flow.e2e.duration and hud.flow.messages by flow and status, 1 minute
 --   session  process metrics by SDK session (service.instance.id), 1 minute
 --   session_flow  runs, 5xx runs and issues by session and flow, 1 minute
---   issue    hud.flow.issues by flow and fingerprint, 1 minute
+--   issue    hud.flow.issues by flow, fingerprint and user error, 1 minute
+--   calling_flow  hud.flow.calling_flows: runs by flow and the flow that called it (parent) and started it (root), 1 minute
 --   function code.function.* by function, file and deployment, 5 minutes
 --   site     code.function.* by function, caller, flow, content hash and error type, 5 minutes
 -- labels holds every environment, service, flow and function seen, for the dashboard selectors.
@@ -184,24 +185,54 @@ ORDER BY (env, service, instance, hour, flow, flow_type);
 CREATE TABLE IF NOT EXISTS ${DATABASE}.issue_1m
 (
     t DateTime, env LowCardinality(String), service LowCardinality(String), flow String, flow_type LowCardinality(String),
-    fingerprint String, framework_result LowCardinality(String), caught LowCardinality(String),
+    fingerprint String, framework_result LowCardinality(String), caught LowCardinality(String), user_error String,
     issues SimpleAggregateFunction(sum, Float64)
 )
 ENGINE = AggregatingMergeTree
 PARTITION BY toDate(t)
-ORDER BY (env, service, flow, t, fingerprint, framework_result, caught, flow_type)
+ORDER BY (env, service, flow, t, fingerprint, framework_result, caught, flow_type, user_error)
 TTL t + toIntervalDay(${HUD_METRICS_FINE_TTL_DAYS:-7})
 SETTINGS ttl_only_drop_parts = 1;
 
 CREATE TABLE IF NOT EXISTS ${DATABASE}.issue_hourly
 (
     hour DateTime, env LowCardinality(String), service LowCardinality(String), flow String, flow_type LowCardinality(String),
-    fingerprint String, framework_result LowCardinality(String), caught LowCardinality(String),
+    fingerprint String, framework_result LowCardinality(String), caught LowCardinality(String), user_error String,
     issues SimpleAggregateFunction(sum, Float64)
 )
 ENGINE = AggregatingMergeTree
 PARTITION BY toYYYYMM(hour)
-ORDER BY (env, service, flow, hour, fingerprint, framework_result, caught, flow_type);
+ORDER BY (env, service, flow, hour, fingerprint, framework_result, caught, flow_type, user_error);
+
+-- parent and root are the calling flows (multiple: the run had more than one). The rest of the attributes are the
+-- flow's own, as on code.flow.duration.
+CREATE TABLE IF NOT EXISTS ${DATABASE}.calling_flow_1m
+(
+    t DateTime, env LowCardinality(String), service LowCardinality(String), flow String, flow_type LowCardinality(String),
+    status_code LowCardinality(String), parent_service LowCardinality(String), parent_flow String,
+    parent_multiple LowCardinality(String), root_service LowCardinality(String), root_flow String,
+    root_multiple LowCardinality(String), deployment String,
+    runs SimpleAggregateFunction(sum, Float64)
+)
+ENGINE = AggregatingMergeTree
+PARTITION BY toDate(t)
+ORDER BY (env, service, flow, t, parent_service, parent_flow, root_service, root_flow, flow_type, status_code, parent_multiple,
+    root_multiple, deployment)
+TTL t + toIntervalDay(${HUD_METRICS_FINE_TTL_DAYS:-7})
+SETTINGS ttl_only_drop_parts = 1;
+
+CREATE TABLE IF NOT EXISTS ${DATABASE}.calling_flow_hourly
+(
+    hour DateTime, env LowCardinality(String), service LowCardinality(String), flow String, flow_type LowCardinality(String),
+    status_code LowCardinality(String), parent_service LowCardinality(String), parent_flow String,
+    parent_multiple LowCardinality(String), root_service LowCardinality(String), root_flow String,
+    root_multiple LowCardinality(String), deployment String,
+    runs SimpleAggregateFunction(sum, Float64)
+)
+ENGINE = AggregatingMergeTree
+PARTITION BY toYYYYMM(hour)
+ORDER BY (env, service, flow, hour, parent_service, parent_flow, root_service, root_flow, flow_type, status_code, parent_multiple,
+    root_multiple, deployment);
 
 CREATE TABLE IF NOT EXISTS ${DATABASE}.function_5m
 (
@@ -366,10 +397,24 @@ SELECT toStartOfMinute(StartTimeUnix + intDiv(TimeUnix - StartTimeUnix, 2)) AS t
     ResourceAttributes['deployment.environment.name'] AS env, ServiceName AS service, Attributes['code.flow.name'] AS flow,
     Attributes['code.flow.type'] AS flow_type, Attributes['issue.fingerprint'] AS fingerprint,
     Attributes['hud.issue.framework_result'] AS framework_result, Attributes['hud.issue.caught'] AS caught,
-    sum(Value) AS issues
+    Attributes['hud.issue.user_error'] AS user_error, sum(Value) AS issues
 FROM ${DATABASE}.ingest_sum
 WHERE MetricName = 'hud.flow.issues' AND AggregationTemporality = 1
-GROUP BY t, env, service, flow, flow_type, fingerprint, framework_result, caught;
+GROUP BY t, env, service, flow, flow_type, fingerprint, framework_result, caught, user_error;
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.calling_flow_1m_runs TO ${DATABASE}.calling_flow_1m
+DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
+SELECT toStartOfMinute(StartTimeUnix + intDiv(TimeUnix - StartTimeUnix, 2)) AS t,
+    ResourceAttributes['deployment.environment.name'] AS env, ServiceName AS service, Attributes['code.flow.name'] AS flow,
+    Attributes['code.flow.type'] AS flow_type, Attributes['http.response.status_code'] AS status_code,
+    Attributes['hud.parent.service.name'] AS parent_service, Attributes['hud.parent.flow.name'] AS parent_flow,
+    Attributes['hud.parent.multiple'] AS parent_multiple, Attributes['hud.root.service.name'] AS root_service,
+    Attributes['hud.root.flow.name'] AS root_flow, Attributes['hud.root.multiple'] AS root_multiple,
+    ResourceAttributes['deployment.id'] AS deployment, sum(Value) AS runs
+FROM ${DATABASE}.ingest_sum
+WHERE MetricName = 'hud.flow.calling_flows' AND AggregationTemporality = 1
+GROUP BY t, env, service, flow, flow_type, status_code, parent_service, parent_flow, parent_multiple, root_service, root_flow,
+    root_multiple, deployment;
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.function_5m_duration TO ${DATABASE}.function_5m
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
@@ -473,9 +518,18 @@ GROUP BY hour, env, service, instance, flow, flow_type;
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.issue_hourly_rollup TO ${DATABASE}.issue_hourly
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
-SELECT toStartOfHour(t) AS hour, env, service, flow, flow_type, fingerprint, framework_result, caught, sum(issues) AS issues
+SELECT toStartOfHour(t) AS hour, env, service, flow, flow_type, fingerprint, framework_result, caught, user_error,
+    sum(issues) AS issues
 FROM ${DATABASE}.issue_1m
-GROUP BY hour, env, service, flow, flow_type, fingerprint, framework_result, caught;
+GROUP BY hour, env, service, flow, flow_type, fingerprint, framework_result, caught, user_error;
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.calling_flow_hourly_rollup TO ${DATABASE}.calling_flow_hourly
+DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
+SELECT toStartOfHour(t) AS hour, env, service, flow, flow_type, status_code, parent_service, parent_flow, parent_multiple,
+    root_service, root_flow, root_multiple, deployment, sum(runs) AS runs
+FROM ${DATABASE}.calling_flow_1m
+GROUP BY hour, env, service, flow, flow_type, status_code, parent_service, parent_flow, parent_multiple, root_service, root_flow,
+    root_multiple, deployment;
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.function_hourly_rollup TO ${DATABASE}.function_hourly
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS

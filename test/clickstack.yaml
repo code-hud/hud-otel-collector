@@ -22,7 +22,8 @@ processors:
     check_interval: 1s
     limit_percentage: 80
     spike_limit_percentage: 20
-  # Every SDK pod exports once a minute: batching keeps ClickHouse at a few large inserts per replica and table.
+  # Every SDK pod exports once a minute: batching keeps ClickHouse at a few large inserts per replica and table, for
+  # metrics and logs alike.
   batch:
     timeout: 5s
     send_batch_size: 10000
@@ -62,5 +63,5 @@ service:
       exporters: [clickhouse]
     logs:
       receivers: [otlp]
-      processors: [memory_limiter]
+      processors: [memory_limiter, batch]
       exporters: [clickhouse]
