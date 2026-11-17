@@ -147,7 +147,7 @@ done
 docker run --rm --network $NET "${MIGRATOR[@]}" -v "$DIR/../hud-migrate:/src" -w /src \
   -v hud-otelcol-gomod:/go/pkg/mod -v hud-otelcol-gocache:/root/.cache/go-build "$GO_IMAGE" go test -count=1 ./...
 
-echo "--- ClickStack collector: two deltas of a counter and of a scale-2 exponential histogram per flow and function, a gauge, one log"
+echo "--- ClickStack collector: two deltas of a counter and of a scale-2 exponential histogram per flow and function, a gauge, one log, 3-minute deltas spread over their buckets"
 docker run -d --name smoke-clickstack --network $NET -p 14319:4318 -v "$DIR:/cfg:ro" \
   -e CLICKHOUSE_ENDPOINT=http://smoke-clickhouse:8123 -e CLICKHOUSE_USER=hud_collector -e CLICKHOUSE_PASSWORD=Collector-pass-1234 \
   -e HUD_CLICKHOUSE_DATABASE=$DB "$IMAGE" --config /cfg/clickstack.yaml >/dev/null
@@ -178,6 +178,17 @@ for r in 1 2; do
     "count":"5","sum":0.55,"scale":2,"zeroCount":"0","positive":{"offset":-14,"bucketCounts":["1","2","2"]}}]}}]}]}]}
 EOF
 done
+# 3-minute deltas are spread over the buckets they cover by share (M5 is a 5-minute boundary): 9 messages from
+# M5 - 150 s to M5 + 30 s go 1.5, 3, 3, 1.5 to their four minutes, 9 calls from M5 - 120 s to M5 + 60 s go 6 and 3 to their
+# 5-minute buckets.
+M5=$((BASE / 300 * 300 - 600))
+curl -sf -X POST localhost:14319/v1/metrics -H 'Content-Type: application/json' -d @- >/dev/null <<EOF
+{"resourceMetrics":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"smoke-spread"}}]},"scopeMetrics":[{"metrics":[
+  {"name":"hud.flow.messages","sum":{"aggregationTemporality":1,"isMonotonic":true,"dataPoints":[{$FLOW,"asInt":"9",
+    "startTimeUnixNano":"$(((M5 - 150) * 1000000000))","timeUnixNano":"$(((M5 + 30) * 1000000000))"}]}},
+  {"name":"code.function.calls","sum":{"aggregationTemporality":1,"isMonotonic":true,"dataPoints":[{"attributes":[{"key":"code.function.name","value":{"stringValue":"g"}}],"asInt":"9",
+    "startTimeUnixNano":"$(((M5 - 120) * 1000000000))","timeUnixNano":"$(((M5 + 60) * 1000000000))"}]}}]}]}]}
+EOF
 curl -sf -X POST localhost:14319/v1/logs -H 'Content-Type: application/json' -d @- >/dev/null <<EOF
 {"resourceLogs":[{"resource":$RESOURCE,"scopeLogs":[{"logRecords":[
   {"timeUnixNano":"$((BASE * 1000000000))","eventName":"hud.forensic","severityText":"ERROR","body":{"stringValue":"{}"}}]}]}]}
@@ -205,7 +216,9 @@ poll sql smoke-clickstack \
   "SELECT sum(runs) FROM $DB.calling_flow_hourly WHERE parent_service = 'caller'=8" \
   "SELECT sum(issues) FROM $DB.issue_hourly WHERE fingerprint = 'fp' AND caught = 'false' AND user_error = 'card declined'=2" \
   "SELECT sum(issues) FROM $DB.session_flow_1m WHERE instance = 'pod-a'=2" \
-  "SELECT groupArray(flow || '/' || function) FROM (SELECT DISTINCT flow, function FROM $DB.labels WHERE service = 'smoke' ORDER BY ALL)=['/','http|/x|get/','http|/x|get/f']"
+  "SELECT groupArray(flow || '/' || function) FROM (SELECT DISTINCT flow, function FROM $DB.labels WHERE service = 'smoke' ORDER BY ALL)=['/','http|/x|get/','http|/x|get/f']" \
+  "SELECT groupArray(round(m, 9)) FROM (SELECT t, sum(messages) AS m FROM $DB.flow_1m WHERE service = 'smoke-spread' GROUP BY t ORDER BY t)=[1.5,3,3,1.5]" \
+  "SELECT groupArray(round(c, 9)) FROM (SELECT t, sum(calls) AS c FROM $DB.function_5m WHERE service = 'smoke-spread' GROUP BY t ORDER BY t)=[6,3]"
 poll sql smoke-clickstack "SELECT count() FROM $DB.otel_logs WHERE EventName = 'hud.forensic' AND ServiceName = 'smoke'=1"
 
 echo "--- TLS: hud-migrate and the collector on the https endpoint form Cloud uses (https://host:8443, trailing slash ok for hud-migrate)"

@@ -84,7 +84,11 @@ Each fine table rolls up into its hourly table. Fine tables keep `HUD_METRICS_FI
 tables keep everything. Every row has the environment (`deployment.environment.name`) and the service (`service.name`).
 Durations are counts per bucket of the `transform/classic` grid: `buckets[k]` counts durations up to
 `duration_bounds[k]` seconds and `buckets[34]` the rest, so any grain answers percentiles. Only deltas are summed (the
-SDK sends nothing else), except the process gauges and limits. The `metrics` `TimeSeries` table of `0001_init.sql` is
+SDK sends nothing else), except the process gauges and limits. A delta covers the SDK's export interval
+(`aggregationInterval`: 5 minutes by default, set per account) and is spread over the fine buckets it overlaps by
+share, so a 1-minute chart shows the SDK's own resolution instead of one minute holding the whole interval. Counts are
+`Float64` for that; they are whole again over whole intervals.
+The `metrics` `TimeSeries` table of `0001_init.sql` is
 still created but nothing writes to it. `playground/clickstack/` runs it end to end with HyperDX and the node SDK; the
 dashboards are in [hud-clickstack-resources](https://github.com/code-hud/hud-clickstack-resources).
 
