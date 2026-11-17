@@ -72,12 +72,12 @@ buckets and batches the inserts.
 | Tables | Grain | One row per (and what it sums) |
 | --- | --- | --- |
 | `flow_1m`, `flow_hourly` | 1 minute, hour | flow, status code, method, route, end reason, queue, deployment: runs, duration, queue latency (e2e), messages |
-| `session_1m`, `session_hourly` | 1 minute, hour | SDK session (`service.instance.id`) and its pod: last report, uptime, CPU, memory and its limit, event loop utilization |
+| `session_health_1m`, `session_health_hourly` | 1 minute, hour | SDK session (`service.instance.id`) and its pod: last report, uptime, CPU, memory and its limit, event loop utilization |
 | `session_flow_1m`, `session_flow_hourly` | 1 minute, hour | session and flow: runs, 5xx runs, issues |
 | `issue_1m`, `issue_hourly` | 1 minute, hour | flow, issue fingerprint and user error: issues |
 | `calling_flow_1m`, `calling_flow_hourly` | 1 minute, hour | flow, status code, and the flow that called it (parent) and started it (root): runs |
 | `function_5m`, `function_hourly` | 5 minutes, hour | function, file, deployment: calls, errors, duration |
-| `site_5m`, `site_hourly` | 5 minutes, hour | function, caller, flow, content hash, error type, deployment: calls, errors, duration |
+| `function_caller_5m`, `function_caller_hourly` | 5 minutes, hour | function, caller function, flow, content hash, error type, deployment: calls, errors, duration |
 | `labels` | | every environment, service, flow and function seen (the dashboards' selectors) |
 
 Each fine table rolls up into its hourly table. Fine tables keep `HUD_METRICS_FINE_TTL_DAYS` days (default 7), hourly

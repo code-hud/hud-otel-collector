@@ -130,12 +130,15 @@ pids=(); for _ in 1 2 3 4; do migrate up & pids+=($!); done
 for p in "${pids[@]}"; do wait "$p"; done
 tables=$(curl -s -u hud_backend:Backend-pass-1234 localhost:18123 \
   --data-binary "SELECT groupArray(name) FROM (SELECT name FROM system.tables WHERE database = '$DB' AND name NOT LIKE '.inner%' ORDER BY name)")
-want="['calling_flow_1m','calling_flow_1m_runs','calling_flow_hourly','calling_flow_hourly_rollup','duration_bounds','flow_1m','flow_1m_duration','flow_1m_e2e','flow_1m_messages','flow_hourly','flow_hourly_rollup',\
-'function_5m','function_5m_calls','function_5m_duration','function_hourly','function_hourly_rollup','ingest_exponential_histogram',\
-'ingest_gauge','ingest_histogram','ingest_sum','ingest_summary','issue_1m','issue_1m_issues','issue_hourly','issue_hourly_rollup',\
-'labels','labels_flows','labels_functions','labels_sessions','metrics','otel_logs','session_1m','session_1m_gauge','session_1m_sum',\
-'session_flow_1m','session_flow_1m_issues','session_flow_1m_runs','session_flow_hourly','session_flow_hourly_rollup','session_hourly',\
-'session_hourly_rollup','site_5m','site_5m_calls','site_5m_duration','site_hourly','site_hourly_rollup']"
+want="['calling_flow_1m','calling_flow_1m_runs','calling_flow_hourly','calling_flow_hourly_rollup','duration_bounds',\
+'flow_1m','flow_1m_duration','flow_1m_e2e','flow_1m_messages','flow_hourly','flow_hourly_rollup','function_5m',\
+'function_5m_calls','function_5m_duration','function_caller_5m','function_caller_5m_calls',\
+'function_caller_5m_duration','function_caller_hourly','function_caller_hourly_rollup','function_hourly',\
+'function_hourly_rollup','ingest_exponential_histogram','ingest_gauge','ingest_histogram','ingest_sum',\
+'ingest_summary','issue_1m','issue_1m_issues','issue_hourly','issue_hourly_rollup','labels','labels_flows',\
+'labels_functions','labels_sessions','metrics','otel_logs','session_flow_1m','session_flow_1m_issues',\
+'session_flow_1m_runs','session_flow_hourly','session_flow_hourly_rollup','session_health_1m',\
+'session_health_1m_gauge','session_health_1m_sum','session_health_hourly','session_health_hourly_rollup']"
 [ "$tables" = "$want" ] || { echo "FAIL: $DB has $tables after up, want $want"; exit 1; }
 for q in "DROP TABLE $DB.otel_logs" "ALTER TABLE $DB.otel_logs ADD INDEX smoke_idx Body TYPE bloom_filter" \
   "DROP DATABASE $DB" "CREATE DATABASE hud_otel"; do
@@ -196,8 +199,8 @@ poll sql smoke-clickstack \
   "SELECT sum(calls) FROM $DB.function_5m WHERE function = 'f' AND deployment = 'd1'=2" \
   "SELECT sum(duration_count) FROM $DB.function_5m WHERE function = 'f'=10" \
   "SELECT arrayCumSum(sumForEachMerge(buckets))[15] FROM $DB.function_5m WHERE function = 'f'=6" \
-  "SELECT sum(calls) FROM $DB.site_hourly WHERE function = 'f' AND flow = 'http|/x|get'=2" \
-  "SELECT max(uptime) FROM $DB.session_1m WHERE instance = 'pod-a' AND env = 'smoke-env' AND last_seen > 0=42" \
+  "SELECT sum(calls) FROM $DB.function_caller_hourly WHERE function = 'f' AND flow = 'http|/x|get'=2" \
+  "SELECT max(uptime) FROM $DB.session_health_1m WHERE instance = 'pod-a' AND env = 'smoke-env' AND last_seen > 0=42" \
   "SELECT sum(runs) FROM $DB.calling_flow_1m WHERE flow = 'http|/x|get' AND parent_service = 'caller' AND parent_flow = 'kafka|t|g' AND root_service = 'edge' AND root_flow = 'http|/y|post'=8" \
   "SELECT sum(runs) FROM $DB.calling_flow_hourly WHERE parent_service = 'caller'=8" \
   "SELECT sum(issues) FROM $DB.issue_hourly WHERE fingerprint = 'fp' AND caught = 'false' AND user_error = 'card declined'=2" \

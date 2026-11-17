@@ -11,12 +11,12 @@
 -- Fine tables (<name>_1m, <name>_5m) keep HUD_METRICS_FINE_TTL_DAYS days (default 7, only applies when a table is
 -- created). Each fine table's insert rolls up into <name>_hourly, which keeps everything.
 --   flow     code.flow.duration, hud.flow.e2e.duration and hud.flow.messages by flow and status, 1 minute
---   session  process metrics by SDK session (service.instance.id), 1 minute
+--   session_health  CPU, memory, event loop and uptime by SDK session (service.instance.id), 1 minute
 --   session_flow  runs, 5xx runs and issues by session and flow, 1 minute
 --   issue    hud.flow.issues by flow, fingerprint and user error, 1 minute
 --   calling_flow  hud.flow.calling_flows: runs by flow and the flow that called it (parent) and started it (root), 1 minute
 --   function code.function.* by function, file and deployment, 5 minutes
---   site     code.function.* by function, caller, flow, content hash and error type, 5 minutes
+--   function_caller  code.function.* by function, caller function, flow, content hash and error type, 5 minutes
 -- labels holds every environment, service, flow and function seen, for the dashboard selectors.
 
 -- The exporter's metric tables, by column name (clickhouseexporter v0.165.0). Summaries and exponential histograms
@@ -125,7 +125,7 @@ ORDER BY (env, service, flow, hour, flow_type, method, route, status_code, end_r
 
 -- One row per session and minute it reported process metrics. uptime is the latest process.uptime (it only grows),
 -- so the session started at last_seen - uptime. elu averages over the event loop's threads.
-CREATE TABLE IF NOT EXISTS ${DATABASE}.session_1m
+CREATE TABLE IF NOT EXISTS ${DATABASE}.session_health_1m
 (
     t DateTime, env LowCardinality(String), service LowCardinality(String), instance String, deployment String, pod String,
     last_seen SimpleAggregateFunction(max, DateTime), uptime SimpleAggregateFunction(max, Float64),
@@ -142,7 +142,7 @@ ORDER BY (env, service, instance, t, deployment, pod)
 TTL t + toIntervalDay(${HUD_METRICS_FINE_TTL_DAYS:-7})
 SETTINGS ttl_only_drop_parts = 1;
 
-CREATE TABLE IF NOT EXISTS ${DATABASE}.session_hourly
+CREATE TABLE IF NOT EXISTS ${DATABASE}.session_health_hourly
 (
     hour DateTime, env LowCardinality(String), service LowCardinality(String), instance String, deployment String, pod String,
     last_seen SimpleAggregateFunction(max, DateTime), uptime SimpleAggregateFunction(max, Float64),
@@ -258,8 +258,8 @@ ENGINE = AggregatingMergeTree
 PARTITION BY toYYYYMM(hour)
 ORDER BY (env, service, function, file, hour, deployment);
 
--- A call site: the function as called by caller in flow. Error rows carry their error_type, call rows ''.
-CREATE TABLE IF NOT EXISTS ${DATABASE}.site_5m
+-- A function as called by one caller function in one flow. Error rows carry their error_type, call rows ''.
+CREATE TABLE IF NOT EXISTS ${DATABASE}.function_caller_5m
 (
     t DateTime, env LowCardinality(String), service LowCardinality(String), function String, file String, caller String,
     flow String, content_hash String, error_type String, deployment String,
@@ -273,7 +273,7 @@ ORDER BY (env, service, function, file, t, caller, flow, content_hash, error_typ
 TTL t + toIntervalDay(${HUD_METRICS_FINE_TTL_DAYS:-7})
 SETTINGS ttl_only_drop_parts = 1;
 
-CREATE TABLE IF NOT EXISTS ${DATABASE}.site_hourly
+CREATE TABLE IF NOT EXISTS ${DATABASE}.function_caller_hourly
 (
     hour DateTime, env LowCardinality(String), service LowCardinality(String), function String, file String, caller String,
     flow String, content_hash String, error_type String, deployment String,
@@ -339,7 +339,7 @@ FROM ${DATABASE}.ingest_sum
 WHERE MetricName = 'hud.flow.messages' AND AggregationTemporality = 1
 GROUP BY t, env, service, flow, flow_type, destination, deployment;
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.session_1m_gauge TO ${DATABASE}.session_1m
+CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.session_health_1m_gauge TO ${DATABASE}.session_health_1m
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
 SELECT toStartOfMinute(TimeUnix) AS t, ResourceAttributes['deployment.environment.name'] AS env, ServiceName AS service,
     ResourceAttributes['service.instance.id'] AS instance, ResourceAttributes['deployment.id'] AS deployment,
@@ -355,7 +355,7 @@ FROM ${DATABASE}.ingest_gauge
 WHERE MetricName IN ('process.uptime', 'process.cpu.utilization', 'nodejs.eventloop.utilization')
 GROUP BY t, env, service, instance, deployment, pod;
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.session_1m_sum TO ${DATABASE}.session_1m
+CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.session_health_1m_sum TO ${DATABASE}.session_health_1m
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
 SELECT toStartOfMinute(TimeUnix) AS t, ResourceAttributes['deployment.environment.name'] AS env, ServiceName AS service,
     ResourceAttributes['service.instance.id'] AS instance, ResourceAttributes['deployment.id'] AS deployment,
@@ -439,7 +439,7 @@ FROM ${DATABASE}.ingest_sum
 WHERE MetricName IN ('code.function.calls', 'code.function.errors') AND AggregationTemporality = 1
 GROUP BY t, env, service, function, file, deployment;
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.site_5m_duration TO ${DATABASE}.site_5m
+CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.function_caller_5m_duration TO ${DATABASE}.function_caller_5m
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
 SELECT toStartOfFiveMinutes(StartTimeUnix + intDiv(TimeUnix - StartTimeUnix, 2)) AS t,
     ResourceAttributes['deployment.environment.name'] AS env, ServiceName AS service,
@@ -451,7 +451,7 @@ FROM ${DATABASE}.ingest_histogram
 WHERE MetricName = 'code.function.call.duration' AND AggregationTemporality = 1
 GROUP BY t, env, service, function, file, caller, flow, content_hash, deployment;
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.site_5m_calls TO ${DATABASE}.site_5m
+CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.function_caller_5m_calls TO ${DATABASE}.function_caller_5m
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
 SELECT toStartOfFiveMinutes(StartTimeUnix + intDiv(TimeUnix - StartTimeUnix, 2)) AS t,
     ResourceAttributes['deployment.environment.name'] AS env, ServiceName AS service,
@@ -500,13 +500,13 @@ SELECT toStartOfHour(t) AS hour, env, service, flow, flow_type, method, route, s
 FROM ${DATABASE}.flow_1m
 GROUP BY hour, env, service, flow, flow_type, method, route, status_code, end_reason, destination, deployment;
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.session_hourly_rollup TO ${DATABASE}.session_hourly
+CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.session_health_hourly_rollup TO ${DATABASE}.session_health_hourly
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
 SELECT toStartOfHour(t) AS hour, env, service, instance, deployment, pod,
     max(last_seen) AS last_seen, max(uptime) AS uptime, sum(cpu_sum) AS cpu_sum, sum(cpu_count) AS cpu_count,
     max(cpu_max) AS cpu_max, sum(memory_sum) AS memory_sum, sum(memory_count) AS memory_count, max(memory_max) AS memory_max,
     max(memory_limit) AS memory_limit, sum(elu_sum) AS elu_sum, sum(elu_count) AS elu_count, max(elu_max) AS elu_max
-FROM ${DATABASE}.session_1m
+FROM ${DATABASE}.session_health_1m
 GROUP BY hour, env, service, instance, deployment, pod;
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.session_flow_hourly_rollup TO ${DATABASE}.session_flow_hourly
@@ -539,10 +539,10 @@ SELECT toStartOfHour(t) AS hour, env, service, function, file, deployment,
 FROM ${DATABASE}.function_5m
 GROUP BY hour, env, service, function, file, deployment;
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.site_hourly_rollup TO ${DATABASE}.site_hourly
+CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.function_caller_hourly_rollup TO ${DATABASE}.function_caller_hourly
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
 SELECT toStartOfHour(t) AS hour, env, service, function, file, caller, flow, content_hash, error_type, deployment,
     sum(calls) AS calls, sum(errors) AS errors, sum(duration_sum) AS duration_sum, sum(duration_count) AS duration_count,
     sumForEachMergeState(buckets) AS buckets
-FROM ${DATABASE}.site_5m
+FROM ${DATABASE}.function_caller_5m
 GROUP BY hour, env, service, function, file, caller, flow, content_hash, error_type, deployment;
