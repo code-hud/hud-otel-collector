@@ -83,13 +83,18 @@ buckets and batches the inserts.
 Each fine table rolls up into its hourly table. Fine tables keep `HUD_METRICS_FINE_TTL_DAYS` days (default 7), hourly
 tables keep everything. `flow_hourly` and `function_hourly` also keep every other attribute the SDK sends, so a new one
 needs no migration: `attributes` holds up to 1000 values per attribute and `attribute_counts` the runs (calls) per
-`attribute=value`. Session and host attributes are left out. `attribute_counts` is not capped (ClickHouse can't keep it
-in step with the capped list through merges), so read it for the listed values only:
+`attribute=value`, keyed by `sipHash64('attribute=value') % 100000`. A row holds at most 100000 counts; values that share
+a bucket add up. Session and host attributes are left out. Every listed value with its runs:
 
 ```sql
-WITH groupUniqArrayMapMerge(1000)(attributes) AS vals, sumMap(attribute_counts) AS counts
-SELECT arrayMap(v -> (v, counts[concat('hud.function.kind=', v)]), vals['hud.function.kind'])
-FROM hud_otel.function_hourly WHERE service = 'checkout' AND hour >= now() - INTERVAL 1 DAY
+SELECT k AS attribute, v AS value, counts[sipHash64(concat(k, '=', v)) % 100000] AS runs
+FROM (
+  SELECT groupUniqArrayMapMerge(1000)(attributes) AS vals, sumMap(attribute_counts) AS counts
+  FROM hud_otel.function_hourly WHERE service = 'checkout' AND hour >= now() - INTERVAL 1 DAY
+)
+ARRAY JOIN mapKeys(vals) AS k, mapValues(vals) AS vs
+ARRAY JOIN vs AS v
+ORDER BY attribute, runs DESC
 ```
 
 Every row has the environment (`deployment.environment.name`) and the service (`service.name`).

@@ -213,9 +213,10 @@ poll sql smoke-clickstack \
   "SELECT sum(duration_count) FROM $DB.function_5m WHERE function = 'f'=10" \
   "SELECT arrayCumSum(sumForEachMerge(buckets))[15] FROM $DB.function_5m WHERE function = 'f'=6" \
   "SELECT sum(calls) FROM $DB.function_caller_hourly WHERE function = 'f' AND flow = 'http|/x|get'=2" \
-  "SELECT sumMap(attribute_counts)['hud.function.kind=method'] FROM $DB.function_hourly WHERE function = 'f'=10" \
+  "SELECT sumMap(attribute_counts)[sipHash64('hud.function.kind=method') % 100000] FROM $DB.function_hourly WHERE function = 'f'=10" \
   "SELECT groupUniqArrayMapMerge(1000)(attributes)['telemetry.sdk.version'] FROM $DB.flow_hourly WHERE service = 'smoke'=['1.12.5']" \
-  "SELECT countIf(k IN ('service.instance.id', 'code.flow.name')) FROM (SELECT arrayJoin(mapKeys(sumMap(attribute_counts))) AS k FROM $DB.function_hourly WHERE function = 'f')=0" \
+  "SELECT arraySort(mapKeys(groupUniqArrayMapMerge(1000)(attributes))) FROM $DB.function_hourly WHERE function = 'f'=['hud.function.kind','telemetry.sdk.version']" \
+  "SELECT length(sumMap(attribute_counts)) FROM $DB.function_hourly WHERE function = 'f'=2" \
   "SELECT countIf(duration_count = 0) FROM $DB.function_hourly FINAL WHERE function = 'f'=0" \
   "SELECT max(uptime) FROM $DB.session_health_1m WHERE instance = 'pod-a' AND env = 'smoke-env' AND last_seen > 0=42" \
   "SELECT sum(runs) FROM $DB.calling_flow_1m WHERE flow = 'http|/x|get' AND parent_service = 'caller' AND parent_flow = 'kafka|t|g' AND root_service = 'edge' AND root_flow = 'http|/y|post'=8" \

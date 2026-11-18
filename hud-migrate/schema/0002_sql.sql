@@ -23,9 +23,9 @@
 --   function_caller  code.function.* by function, caller function, flow, content hash and error type, 5 minutes
 -- labels holds every environment, service, flow and function seen, for the dashboard selectors.
 -- flow_hourly and function_hourly also keep every other attribute the SDK sends (a new one needs no migration):
--- attributes holds up to 1000 values per attribute, attribute_counts the runs (calls) per 'attribute=value' of every
--- value (not capped: read it for the values in attributes). Session and host attributes stay out, so a row never grows
--- with the number of pods.
+-- attributes holds up to 1000 values per attribute, attribute_counts the runs (calls) per 'attribute=value', keyed by
+-- sipHash64('attribute=value') % 100000 so a row holds at most 100000 counts (values sharing a bucket add up). Session
+-- and host attributes stay out, so a row never grows with the number of pods.
 
 -- The exporter's metric tables, by column name (clickhouseexporter v0.165.0). Summaries and exponential histograms
 -- (none after transform/classic) are accepted and dropped.
@@ -127,7 +127,7 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.flow_hourly
     e2e_buckets AggregateFunction(sumForEach, Array(Float64)),
     messages SimpleAggregateFunction(sum, Float64), last_seen SimpleAggregateFunction(max, DateTime),
     attributes AggregateFunction(groupUniqArrayMap(1000), Map(String, String)),
-    attribute_counts SimpleAggregateFunction(sumMap, Map(String, Float64))
+    attribute_counts SimpleAggregateFunction(sumMap, Map(UInt32, Float64))
 )
 ENGINE = AggregatingMergeTree
 PARTITION BY toYYYYMM(hour)
@@ -264,7 +264,7 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.function_hourly
     duration_sum SimpleAggregateFunction(sum, Float64), duration_count SimpleAggregateFunction(sum, Float64),
     buckets AggregateFunction(sumForEach, Array(Float64)),
     attributes AggregateFunction(groupUniqArrayMap(1000), Map(String, String)),
-    attribute_counts SimpleAggregateFunction(sumMap, Map(String, Float64))
+    attribute_counts SimpleAggregateFunction(sumMap, Map(UInt32, Float64))
 )
 ENGINE = AggregatingMergeTree
 PARTITION BY toYYYYMM(hour)
@@ -642,8 +642,7 @@ SELECT toStartOfHour(if(we > ws AND we - ws <= 3600, StartTimeUnix, TimeUnix)) A
     0 AS duration_count, 0 AS duration_sum, sumForEachState(CAST([], 'Array(Float64)')) AS buckets,
     0 AS e2e_count, 0 AS e2e_sum, sumForEachState(CAST([], 'Array(Float64)')) AS e2e_buckets, 0 AS messages,
     max(TimeUnix) AS last_seen, groupUniqArrayMapState(1000)(other) AS attributes,
-    sumMap(mapFromArrays(arrayMap((k, v) -> concat(k, '=', v), mapKeys(other), mapValues(other)),
-        arrayMap(k -> toFloat64(Count), mapKeys(other)))) AS attribute_counts
+    sumMap(mapApply((k, v) -> (sipHash64(concat(k, '=', v)) % 100000, toFloat64(Count)), other)) AS attribute_counts
 FROM ${DATABASE}.ingest_histogram
 WHERE MetricName = 'code.flow.duration' AND AggregationTemporality = 1
 GROUP BY hour, env, service, flow, flow_type, method, route, status_code, end_reason, destination, deployment;
@@ -660,8 +659,7 @@ SELECT toStartOfHour(if(we > ws AND we - ws <= 3600, StartTimeUnix, TimeUnix)) A
     ResourceAttributes['deployment.id'] AS deployment,
     0 AS calls, 0 AS errors, 0 AS duration_sum, 0 AS duration_count, sumForEachState(CAST([], 'Array(Float64)')) AS buckets,
     groupUniqArrayMapState(1000)(other) AS attributes,
-    sumMap(mapFromArrays(arrayMap((k, v) -> concat(k, '=', v), mapKeys(other), mapValues(other)),
-        arrayMap(k -> toFloat64(Count), mapKeys(other)))) AS attribute_counts
+    sumMap(mapApply((k, v) -> (sipHash64(concat(k, '=', v)) % 100000, toFloat64(Count)), other)) AS attribute_counts
 FROM ${DATABASE}.ingest_histogram
 WHERE MetricName = 'code.function.call.duration' AND AggregationTemporality = 1
 GROUP BY hour, env, service, function, file, deployment;
