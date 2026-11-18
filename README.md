@@ -82,10 +82,17 @@ buckets and batches the inserts.
 
 Each fine table rolls up into its hourly table. Fine tables keep `HUD_METRICS_FINE_TTL_DAYS` days (default 7), hourly
 tables keep everything. `flow_hourly` and `function_hourly` also keep every other attribute the SDK sends, so a new one
-needs no migration: `attributes` holds up to 20 values per attribute and `attribute_counts` the runs (calls) per
-`attribute=value`, e.g. `sumMap(attribute_counts)['hud.function.kind=method']` or
-`groupUniqArrayMapMerge(20)(attributes)['telemetry.sdk.version']`. Session and host attributes are left out. Every row
-has the environment (`deployment.environment.name`) and the service (`service.name`).
+needs no migration: `attributes` holds up to 1000 values per attribute and `attribute_counts` the runs (calls) per
+`attribute=value`. Session and host attributes are left out. `attribute_counts` is not capped (ClickHouse can't keep it
+in step with the capped list through merges), so read it for the listed values only:
+
+```sql
+WITH groupUniqArrayMapMerge(1000)(attributes) AS vals, sumMap(attribute_counts) AS counts
+SELECT arrayMap(v -> (v, counts[concat('hud.function.kind=', v)]), vals['hud.function.kind'])
+FROM hud_otel.function_hourly WHERE service = 'checkout' AND hour >= now() - INTERVAL 1 DAY
+```
+
+Every row has the environment (`deployment.environment.name`) and the service (`service.name`).
 Durations are counts per bucket of the `transform/classic` grid: `buckets[k]` counts durations up to
 `duration_bounds[k]` seconds and `buckets[34]` the rest, so any grain answers percentiles. Only deltas are summed (the
 SDK sends nothing else), except the process gauges and limits. A delta covers the SDK's export interval
