@@ -81,8 +81,9 @@ buckets and batches the inserts.
 | `labels` | | every environment, service, flow and function seen (the dashboards' selectors) |
 
 Each fine table rolls up into its hourly table. Fine tables keep `HUD_METRICS_FINE_TTL_DAYS` days (default 7), hourly
-tables keep everything. `flow_hourly` and `function_hourly` also keep every other attribute the SDK sends, so a new one
-needs no migration: `attributes` holds up to 1000 values per attribute and `attribute_counts` the runs (calls) per
+tables keep everything. The flow and function tables also keep every other attribute the SDK sends, so a new one needs
+no migration: 2 days in `flow_1m` and `function_5m` (at the export interval, 5 minutes by default), for good in
+`flow_hourly` and `function_hourly`. `attributes` holds up to 1000 values per attribute and `attribute_counts` the runs (calls) per
 `attribute=value`, keyed by `sipHash64('attribute=value') % 100000`. A row holds at most 100000 counts; values that share
 a bucket add up. Session and host attributes are left out. Every listed value with its runs:
 

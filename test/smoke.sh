@@ -131,10 +131,10 @@ for p in "${pids[@]}"; do wait "$p"; done
 tables=$(curl -s -u hud_backend:Backend-pass-1234 localhost:18123 \
   --data-binary "SELECT groupArray(name) FROM (SELECT name FROM system.tables WHERE database = '$DB' AND name NOT LIKE '.inner%' ORDER BY name)")
 want="['calling_flow_1m','calling_flow_1m_runs','calling_flow_hourly','calling_flow_hourly_rollup','duration_bounds',\
-'flow_1m','flow_1m_duration','flow_1m_e2e','flow_1m_messages','flow_hourly','flow_hourly_attributes',\
-'flow_hourly_rollup','function_5m','function_5m_calls','function_5m_duration','function_caller_5m','function_caller_5m_calls',\
-'function_caller_5m_duration','function_caller_hourly','function_caller_hourly_rollup','function_hourly',\
-'function_hourly_attributes','function_hourly_rollup','ingest_exponential_histogram','ingest_gauge','ingest_histogram','ingest_sum',\
+'flow_1m','flow_1m_attributes','flow_1m_duration','flow_1m_e2e','flow_1m_messages','flow_hourly',\
+'flow_hourly_rollup','function_5m','function_5m_attributes','function_5m_calls','function_5m_duration','function_caller_5m',\
+'function_caller_5m_calls','function_caller_5m_duration','function_caller_hourly','function_caller_hourly_rollup','function_hourly',\
+'function_hourly_rollup','ingest_exponential_histogram','ingest_gauge','ingest_histogram','ingest_sum',\
 'ingest_summary','issue_1m','issue_1m_issues','issue_hourly','issue_hourly_rollup','labels','labels_flows',\
 'labels_functions','labels_sessions','metrics','otel_logs','session_flow_1m','session_flow_1m_issues',\
 'session_flow_1m_runs','session_flow_hourly','session_flow_hourly_rollup','session_health_1m',\
@@ -217,7 +217,10 @@ poll sql smoke-clickstack \
   "SELECT groupUniqArrayMapMerge(1000)(attributes)['telemetry.sdk.version'] FROM $DB.flow_hourly WHERE service = 'smoke'=['1.12.5']" \
   "SELECT arraySort(mapKeys(groupUniqArrayMapMerge(1000)(attributes))) FROM $DB.function_hourly WHERE function = 'f'=['hud.function.kind','telemetry.sdk.version']" \
   "SELECT length(sumMap(attribute_counts)) FROM $DB.function_hourly WHERE function = 'f'=2" \
-  "SELECT countIf(duration_count = 0) FROM $DB.function_hourly FINAL WHERE function = 'f'=0" \
+  "SELECT sumMap(attribute_counts)[sipHash64('hud.function.kind=method') % 100000] FROM $DB.function_5m WHERE function = 'f'=10" \
+  "SELECT groupUniqArrayMapMerge(1000)(attributes)['telemetry.sdk.version'] FROM $F=['1.12.5']" \
+  "SELECT countIf(duration_count = 0) FROM $DB.function_5m FINAL WHERE function = 'f'=0" \
+  "SELECT countIf(duration_count = 0) FROM $DB.flow_1m FINAL WHERE service = 'smoke' AND flow = 'http|/x|get'=0" \
   "SELECT max(uptime) FROM $DB.session_health_1m WHERE instance = 'pod-a' AND env = 'smoke-env' AND last_seen > 0=42" \
   "SELECT sum(runs) FROM $DB.calling_flow_1m WHERE flow = 'http|/x|get' AND parent_service = 'caller' AND parent_flow = 'kafka|t|g' AND root_service = 'edge' AND root_flow = 'http|/y|post'=8" \
   "SELECT sum(runs) FROM $DB.calling_flow_hourly WHERE parent_service = 'caller'=8" \

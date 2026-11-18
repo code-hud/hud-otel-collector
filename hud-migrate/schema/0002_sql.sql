@@ -22,10 +22,11 @@
 --   function code.function.* by function, file and deployment, 5 minutes
 --   function_caller  code.function.* by function, caller function, flow, content hash and error type, 5 minutes
 -- labels holds every environment, service, flow and function seen, for the dashboard selectors.
--- flow_hourly and function_hourly also keep every other attribute the SDK sends (a new one needs no migration):
--- attributes holds up to 1000 values per attribute, attribute_counts the runs (calls) per 'attribute=value', keyed by
--- sipHash64('attribute=value') % 100000 so a row holds at most 100000 counts (values sharing a bucket add up). Session
--- and host attributes stay out, so a row never grows with the number of pods.
+-- flow and function also keep every other attribute the SDK sends (a new one needs no migration), for 2 days in the
+-- fine tables and for good in the hourly ones: attributes holds up to 1000 values per attribute, attribute_counts the
+-- runs (calls) per 'attribute=value', keyed by sipHash64('attribute=value') % 100000 so a row holds at most 100000
+-- counts (values sharing a bucket add up). Session and host attributes stay out, so a row never grows with the number
+-- of pods.
 
 -- The exporter's metric tables, by column name (clickhouseexporter v0.165.0). Summaries and exponential histograms
 -- (none after transform/classic) are accepted and dropped.
@@ -108,7 +109,9 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.flow_1m
     buckets AggregateFunction(sumForEach, Array(Float64)),
     e2e_count SimpleAggregateFunction(sum, Float64), e2e_sum SimpleAggregateFunction(sum, Float64),
     e2e_buckets AggregateFunction(sumForEach, Array(Float64)),
-    messages SimpleAggregateFunction(sum, Float64), last_seen SimpleAggregateFunction(max, DateTime)
+    messages SimpleAggregateFunction(sum, Float64), last_seen SimpleAggregateFunction(max, DateTime),
+    attributes AggregateFunction(groupUniqArrayMap(1000), Map(String, String)) TTL t + INTERVAL 2 DAY,
+    attribute_counts SimpleAggregateFunction(sumMap, Map(UInt32, Float64)) TTL t + INTERVAL 2 DAY
 )
 ENGINE = AggregatingMergeTree
 PARTITION BY toDate(t)
@@ -249,7 +252,9 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.function_5m
     t DateTime, env LowCardinality(String), service LowCardinality(String), function String, file String, deployment String,
     calls SimpleAggregateFunction(sum, Float64), errors SimpleAggregateFunction(sum, Float64),
     duration_sum SimpleAggregateFunction(sum, Float64), duration_count SimpleAggregateFunction(sum, Float64),
-    buckets AggregateFunction(sumForEach, Array(Float64))
+    buckets AggregateFunction(sumForEach, Array(Float64)),
+    attributes AggregateFunction(groupUniqArrayMap(1000), Map(String, String)) TTL t + INTERVAL 2 DAY,
+    attribute_counts SimpleAggregateFunction(sumMap, Map(UInt32, Float64)) TTL t + INTERVAL 2 DAY
 )
 ENGINE = AggregatingMergeTree
 PARTITION BY toDate(t)
@@ -571,7 +576,8 @@ DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
 SELECT toStartOfHour(t) AS hour, env, service, flow, flow_type, method, route, status_code, end_reason, destination, deployment,
     sum(duration_count) AS duration_count, sum(duration_sum) AS duration_sum, sumForEachMergeState(buckets) AS buckets,
     sum(e2e_count) AS e2e_count, sum(e2e_sum) AS e2e_sum, sumForEachMergeState(e2e_buckets) AS e2e_buckets,
-    sum(messages) AS messages, max(last_seen) AS last_seen
+    sum(messages) AS messages, max(last_seen) AS last_seen,
+    groupUniqArrayMapMergeState(1000)(attributes) AS attributes, sumMap(attribute_counts) AS attribute_counts
 FROM ${DATABASE}.flow_1m
 GROUP BY hour, env, service, flow, flow_type, method, route, status_code, end_reason, destination, deployment;
 
@@ -610,7 +616,8 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.function_hourly_rollup TO ${D
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
 SELECT toStartOfHour(t) AS hour, env, service, function, file, deployment,
     sum(calls) AS calls, sum(errors) AS errors, sum(duration_sum) AS duration_sum, sum(duration_count) AS duration_count,
-    sumForEachMergeState(buckets) AS buckets
+    sumForEachMergeState(buckets) AS buckets,
+    groupUniqArrayMapMergeState(1000)(attributes) AS attributes, sumMap(attribute_counts) AS attribute_counts
 FROM ${DATABASE}.function_5m
 GROUP BY hour, env, service, function, file, deployment;
 
@@ -622,18 +629,19 @@ SELECT toStartOfHour(t) AS hour, env, service, function, file, caller, flow, con
 FROM ${DATABASE}.function_caller_5m
 GROUP BY hour, env, service, function, file, caller, flow, content_hash, error_type, deployment;
 
--- The other attributes of each run (call), straight from the ingest table onto the hourly row of the same key: the
--- grouping must stay the same as the fine table's view, so the row merges into the one its rollup writes. A delta goes
--- to the hour its interval starts in (or of TimeUnix, as in the fine tables, when it is empty or longer than an hour).
+-- The other attributes of each run (call), from the ingest table onto the fine row of the same key, and on to the hourly
+-- row with the rollup: the grouping must stay the same as the fine table's view, so the row merges into it. A delta is
+-- not spread: it goes to the bucket its interval starts in (or of TimeUnix, as above, when it is empty or longer than an
+-- hour), so the fine tables have them at the export interval.
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.flow_hourly_attributes TO ${DATABASE}.flow_hourly
+CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.flow_1m_attributes TO ${DATABASE}.flow_1m
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
 WITH toUInt32(StartTimeUnix) AS ws, toUInt32(TimeUnix) AS we,
     mapFilter((k, v) -> v != '' AND NOT has(['service.name', 'deployment.environment.name', 'deployment.id', 'code.flow.name',
         'code.flow.type', 'http.request.method', 'http.route', 'http.response.status_code', 'hud.flow.end_reason',
         'messaging.destination.name', 'messaging.destination.template', 'service.instance.id', 'k8s.pod.name', 'k8s.pod.uid',
         'process.pid', 'host.name', 'host.id', 'container.id'], k), mapConcat(Attributes, ResourceAttributes)) AS other
-SELECT toStartOfHour(if(we > ws AND we - ws <= 3600, StartTimeUnix, TimeUnix)) AS hour,
+SELECT toStartOfMinute(if(we > ws AND we - ws <= 3600, StartTimeUnix, TimeUnix)) AS t,
     ResourceAttributes['deployment.environment.name'] AS env, ServiceName AS service, Attributes['code.flow.name'] AS flow,
     Attributes['code.flow.type'] AS flow_type, Attributes['http.request.method'] AS method, Attributes['http.route'] AS route,
     Attributes['http.response.status_code'] AS status_code, Attributes['hud.flow.end_reason'] AS end_reason,
@@ -645,15 +653,15 @@ SELECT toStartOfHour(if(we > ws AND we - ws <= 3600, StartTimeUnix, TimeUnix)) A
     sumMap(mapApply((k, v) -> (sipHash64(concat(k, '=', v)) % 100000, toFloat64(Count)), other)) AS attribute_counts
 FROM ${DATABASE}.ingest_histogram
 WHERE MetricName = 'code.flow.duration' AND AggregationTemporality = 1
-GROUP BY hour, env, service, flow, flow_type, method, route, status_code, end_reason, destination, deployment;
+GROUP BY t, env, service, flow, flow_type, method, route, status_code, end_reason, destination, deployment;
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.function_hourly_attributes TO ${DATABASE}.function_hourly
+CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.function_5m_attributes TO ${DATABASE}.function_5m
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
 WITH toUInt32(StartTimeUnix) AS ws, toUInt32(TimeUnix) AS we,
     mapFilter((k, v) -> v != '' AND NOT has(['service.name', 'deployment.environment.name', 'deployment.id', 'code.function.name',
         'code.file.path', 'code.flow.name', 'service.instance.id', 'k8s.pod.name', 'k8s.pod.uid', 'process.pid', 'host.name',
         'host.id', 'container.id'], k), mapConcat(Attributes, ResourceAttributes)) AS other
-SELECT toStartOfHour(if(we > ws AND we - ws <= 3600, StartTimeUnix, TimeUnix)) AS hour,
+SELECT toStartOfFiveMinutes(if(we > ws AND we - ws <= 3600, StartTimeUnix, TimeUnix)) AS t,
     ResourceAttributes['deployment.environment.name'] AS env, ServiceName AS service,
     Attributes['code.function.name'] AS function, Attributes['code.file.path'] AS file,
     ResourceAttributes['deployment.id'] AS deployment,
@@ -662,4 +670,4 @@ SELECT toStartOfHour(if(we > ws AND we - ws <= 3600, StartTimeUnix, TimeUnix)) A
     sumMap(mapApply((k, v) -> (sipHash64(concat(k, '=', v)) % 100000, toFloat64(Count)), other)) AS attribute_counts
 FROM ${DATABASE}.ingest_histogram
 WHERE MetricName = 'code.function.call.duration' AND AggregationTemporality = 1
-GROUP BY hour, env, service, function, file, deployment;
+GROUP BY t, env, service, function, file, deployment;
