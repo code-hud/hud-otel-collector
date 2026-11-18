@@ -22,6 +22,9 @@
 --   function code.function.* by function, file and deployment, 5 minutes
 --   function_caller  code.function.* by function, caller function, flow, content hash and error type, 5 minutes
 -- labels holds every environment, service, flow and function seen, for the dashboard selectors.
+-- flow_hourly and function_hourly also keep every other attribute the SDK sends (a new one needs no migration):
+-- attributes holds up to 20 values per attribute, attribute_counts the runs (calls) per 'attribute=value'. Session
+-- and host attributes stay out, so a row never grows with the number of pods.
 
 -- The exporter's metric tables, by column name (clickhouseexporter v0.165.0). Summaries and exponential histograms
 -- (none after transform/classic) are accepted and dropped.
@@ -121,7 +124,9 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.flow_hourly
     buckets AggregateFunction(sumForEach, Array(Float64)),
     e2e_count SimpleAggregateFunction(sum, Float64), e2e_sum SimpleAggregateFunction(sum, Float64),
     e2e_buckets AggregateFunction(sumForEach, Array(Float64)),
-    messages SimpleAggregateFunction(sum, Float64), last_seen SimpleAggregateFunction(max, DateTime)
+    messages SimpleAggregateFunction(sum, Float64), last_seen SimpleAggregateFunction(max, DateTime),
+    attributes AggregateFunction(groupUniqArrayMap(20), Map(String, String)),
+    attribute_counts SimpleAggregateFunction(sumMap, Map(String, Float64))
 )
 ENGINE = AggregatingMergeTree
 PARTITION BY toYYYYMM(hour)
@@ -256,7 +261,9 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.function_hourly
     hour DateTime, env LowCardinality(String), service LowCardinality(String), function String, file String, deployment String,
     calls SimpleAggregateFunction(sum, Float64), errors SimpleAggregateFunction(sum, Float64),
     duration_sum SimpleAggregateFunction(sum, Float64), duration_count SimpleAggregateFunction(sum, Float64),
-    buckets AggregateFunction(sumForEach, Array(Float64))
+    buckets AggregateFunction(sumForEach, Array(Float64)),
+    attributes AggregateFunction(groupUniqArrayMap(20), Map(String, String)),
+    attribute_counts SimpleAggregateFunction(sumMap, Map(String, Float64))
 )
 ENGINE = AggregatingMergeTree
 PARTITION BY toYYYYMM(hour)
@@ -613,3 +620,47 @@ SELECT toStartOfHour(t) AS hour, env, service, function, file, caller, flow, con
     sumForEachMergeState(buckets) AS buckets
 FROM ${DATABASE}.function_caller_5m
 GROUP BY hour, env, service, function, file, caller, flow, content_hash, error_type, deployment;
+
+-- The other attributes of each run (call), straight from the ingest table onto the hourly row of the same key: the
+-- grouping must stay the same as the fine table's view, so the row merges into the one its rollup writes. A delta goes
+-- to the hour its interval starts in (or of TimeUnix, as in the fine tables, when it is empty or longer than an hour).
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.flow_hourly_attributes TO ${DATABASE}.flow_hourly
+DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
+WITH toUInt32(StartTimeUnix) AS ws, toUInt32(TimeUnix) AS we,
+    mapFilter((k, v) -> v != '' AND NOT has(['service.name', 'deployment.environment.name', 'deployment.id', 'code.flow.name',
+        'code.flow.type', 'http.request.method', 'http.route', 'http.response.status_code', 'hud.flow.end_reason',
+        'messaging.destination.name', 'messaging.destination.template', 'service.instance.id', 'k8s.pod.name', 'k8s.pod.uid',
+        'process.pid', 'host.name', 'host.id', 'container.id'], k), mapConcat(Attributes, ResourceAttributes)) AS other
+SELECT toStartOfHour(if(we > ws AND we - ws <= 3600, StartTimeUnix, TimeUnix)) AS hour,
+    ResourceAttributes['deployment.environment.name'] AS env, ServiceName AS service, Attributes['code.flow.name'] AS flow,
+    Attributes['code.flow.type'] AS flow_type, Attributes['http.request.method'] AS method, Attributes['http.route'] AS route,
+    Attributes['http.response.status_code'] AS status_code, Attributes['hud.flow.end_reason'] AS end_reason,
+    if(Attributes['messaging.destination.name'] != '', Attributes['messaging.destination.name'],
+        Attributes['messaging.destination.template']) AS destination, ResourceAttributes['deployment.id'] AS deployment,
+    0 AS duration_count, 0 AS duration_sum, sumForEachState(CAST([], 'Array(Float64)')) AS buckets,
+    0 AS e2e_count, 0 AS e2e_sum, sumForEachState(CAST([], 'Array(Float64)')) AS e2e_buckets, 0 AS messages,
+    max(TimeUnix) AS last_seen, groupUniqArrayMapState(20)(other) AS attributes,
+    sumMap(mapFromArrays(arrayMap((k, v) -> concat(k, '=', v), mapKeys(other), mapValues(other)),
+        arrayMap(k -> toFloat64(Count), mapKeys(other)))) AS attribute_counts
+FROM ${DATABASE}.ingest_histogram
+WHERE MetricName = 'code.flow.duration' AND AggregationTemporality = 1
+GROUP BY hour, env, service, flow, flow_type, method, route, status_code, end_reason, destination, deployment;
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.function_hourly_attributes TO ${DATABASE}.function_hourly
+DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
+WITH toUInt32(StartTimeUnix) AS ws, toUInt32(TimeUnix) AS we,
+    mapFilter((k, v) -> v != '' AND NOT has(['service.name', 'deployment.environment.name', 'deployment.id', 'code.function.name',
+        'code.file.path', 'code.flow.name', 'service.instance.id', 'k8s.pod.name', 'k8s.pod.uid', 'process.pid', 'host.name',
+        'host.id', 'container.id'], k), mapConcat(Attributes, ResourceAttributes)) AS other
+SELECT toStartOfHour(if(we > ws AND we - ws <= 3600, StartTimeUnix, TimeUnix)) AS hour,
+    ResourceAttributes['deployment.environment.name'] AS env, ServiceName AS service,
+    Attributes['code.function.name'] AS function, Attributes['code.file.path'] AS file,
+    ResourceAttributes['deployment.id'] AS deployment,
+    0 AS calls, 0 AS errors, 0 AS duration_sum, 0 AS duration_count, sumForEachState(CAST([], 'Array(Float64)')) AS buckets,
+    groupUniqArrayMapState(20)(other) AS attributes,
+    sumMap(mapFromArrays(arrayMap((k, v) -> concat(k, '=', v), mapKeys(other), mapValues(other)),
+        arrayMap(k -> toFloat64(Count), mapKeys(other)))) AS attribute_counts
+FROM ${DATABASE}.ingest_histogram
+WHERE MetricName = 'code.function.call.duration' AND AggregationTemporality = 1
+GROUP BY hour, env, service, function, file, deployment;

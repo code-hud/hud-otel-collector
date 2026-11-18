@@ -131,10 +131,10 @@ for p in "${pids[@]}"; do wait "$p"; done
 tables=$(curl -s -u hud_backend:Backend-pass-1234 localhost:18123 \
   --data-binary "SELECT groupArray(name) FROM (SELECT name FROM system.tables WHERE database = '$DB' AND name NOT LIKE '.inner%' ORDER BY name)")
 want="['calling_flow_1m','calling_flow_1m_runs','calling_flow_hourly','calling_flow_hourly_rollup','duration_bounds',\
-'flow_1m','flow_1m_duration','flow_1m_e2e','flow_1m_messages','flow_hourly','flow_hourly_rollup','function_5m',\
-'function_5m_calls','function_5m_duration','function_caller_5m','function_caller_5m_calls',\
+'flow_1m','flow_1m_duration','flow_1m_e2e','flow_1m_messages','flow_hourly','flow_hourly_attributes',\
+'flow_hourly_rollup','function_5m','function_5m_calls','function_5m_duration','function_caller_5m','function_caller_5m_calls',\
 'function_caller_5m_duration','function_caller_hourly','function_caller_hourly_rollup','function_hourly',\
-'function_hourly_rollup','ingest_exponential_histogram','ingest_gauge','ingest_histogram','ingest_sum',\
+'function_hourly_attributes','function_hourly_rollup','ingest_exponential_histogram','ingest_gauge','ingest_histogram','ingest_sum',\
 'ingest_summary','issue_1m','issue_1m_issues','issue_hourly','issue_hourly_rollup','labels','labels_flows',\
 'labels_functions','labels_sessions','metrics','otel_logs','session_flow_1m','session_flow_1m_issues',\
 'session_flow_1m_runs','session_flow_hourly','session_flow_hourly_rollup','session_health_1m',\
@@ -156,8 +156,10 @@ for _ in $(seq 30); do curl -s -o /dev/null localhost:14319 && break; sleep 1; d
 # Buckets (2^(k/4), 2^((k+1)/4)] s for k = -14..-12 hold 1, 2 and 2 per delta, so per delta the classic bucket
 # le=0.0884 (just above 2^(-14/4)) holds 0, le=0.125 holds 3 and le=0.177 holds 5
 RESOURCE='{"attributes":[{"key":"service.name","value":{"stringValue":"smoke"}},{"key":"service.instance.id","value":{"stringValue":"pod-a"}},
-  {"key":"deployment.environment.name","value":{"stringValue":"smoke-env"}},{"key":"deployment.id","value":{"stringValue":"d1"}}]}'
-FUNCTION='"attributes":[{"key":"code.function.name","value":{"stringValue":"f"}},{"key":"code.flow.name","value":{"stringValue":"http|/x|get"}}]'
+  {"key":"deployment.environment.name","value":{"stringValue":"smoke-env"}},{"key":"deployment.id","value":{"stringValue":"d1"}},
+  {"key":"telemetry.sdk.version","value":{"stringValue":"1.12.5"}}]}'
+FUNCTION='"attributes":[{"key":"code.function.name","value":{"stringValue":"f"}},{"key":"code.flow.name","value":{"stringValue":"http|/x|get"}},
+  {"key":"hud.function.kind","value":{"stringValue":"method"}}]'
 FLOW='"attributes":[{"key":"code.flow.name","value":{"stringValue":"http|/x|get"}},{"key":"code.flow.type","value":{"stringValue":"http"}},{"key":"http.response.status_code","value":{"intValue":"500"}}]'
 CALLER='"attributes":[{"key":"code.flow.name","value":{"stringValue":"http|/x|get"}},{"key":"hud.parent.service.name","value":{"stringValue":"caller"}},
   {"key":"hud.parent.flow.name","value":{"stringValue":"kafka|t|g"}},{"key":"hud.root.service.name","value":{"stringValue":"edge"}},{"key":"hud.root.flow.name","value":{"stringValue":"http|/y|post"}}]'
@@ -211,6 +213,10 @@ poll sql smoke-clickstack \
   "SELECT sum(duration_count) FROM $DB.function_5m WHERE function = 'f'=10" \
   "SELECT arrayCumSum(sumForEachMerge(buckets))[15] FROM $DB.function_5m WHERE function = 'f'=6" \
   "SELECT sum(calls) FROM $DB.function_caller_hourly WHERE function = 'f' AND flow = 'http|/x|get'=2" \
+  "SELECT sumMap(attribute_counts)['hud.function.kind=method'] FROM $DB.function_hourly WHERE function = 'f'=10" \
+  "SELECT groupUniqArrayMapMerge(20)(attributes)['telemetry.sdk.version'] FROM $DB.flow_hourly WHERE service = 'smoke'=['1.12.5']" \
+  "SELECT countIf(k IN ('service.instance.id', 'code.flow.name')) FROM (SELECT arrayJoin(mapKeys(sumMap(attribute_counts))) AS k FROM $DB.function_hourly WHERE function = 'f')=0" \
+  "SELECT countIf(duration_count = 0) FROM $DB.function_hourly FINAL WHERE function = 'f'=0" \
   "SELECT max(uptime) FROM $DB.session_health_1m WHERE instance = 'pod-a' AND env = 'smoke-env' AND last_seen > 0=42" \
   "SELECT sum(runs) FROM $DB.calling_flow_1m WHERE flow = 'http|/x|get' AND parent_service = 'caller' AND parent_flow = 'kafka|t|g' AND root_service = 'edge' AND root_flow = 'http|/y|post'=8" \
   "SELECT sum(runs) FROM $DB.calling_flow_hourly WHERE parent_service = 'caller'=8" \
