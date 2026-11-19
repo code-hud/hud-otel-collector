@@ -117,7 +117,7 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.flow
     e2e_buckets Array(Float64),
     messages Float64, last_seen DateTime,
     attributes Map(String, Array(String)),
-    attribute_counts Map(UInt32, Float64)
+    attribute_counts Map(UInt32, UInt64)
 )
 ENGINE = MergeTree
 PARTITION BY toDate(t)
@@ -136,7 +136,7 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.flow_hourly
     e2e_buckets AggregateFunction(sumForEach, Array(Float64)),
     messages SimpleAggregateFunction(sum, Float64), last_seen SimpleAggregateFunction(max, DateTime),
     attributes AggregateFunction(groupUniqArrayArrayMap(1000), Map(String, Array(String))),
-    attribute_counts SimpleAggregateFunction(sumMap, Map(UInt32, Float64))
+    attribute_counts SimpleAggregateFunction(sumMap, Map(UInt32, UInt64))
 )
 ENGINE = AggregatingMergeTree
 PARTITION BY toYYYYMM(hour)
@@ -260,7 +260,7 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.function
     duration_sum Float64, duration_count Float64,
     buckets Array(Float64),
     attributes Map(String, Array(String)),
-    attribute_counts Map(UInt32, Float64)
+    attribute_counts Map(UInt32, UInt64)
 )
 ENGINE = MergeTree
 PARTITION BY toDate(t)
@@ -275,7 +275,7 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.function_hourly
     duration_sum SimpleAggregateFunction(sum, Float64), duration_count SimpleAggregateFunction(sum, Float64),
     buckets AggregateFunction(sumForEach, Array(Float64)),
     attributes AggregateFunction(groupUniqArrayArrayMap(1000), Map(String, Array(String))),
-    attribute_counts SimpleAggregateFunction(sumMap, Map(UInt32, Float64))
+    attribute_counts SimpleAggregateFunction(sumMap, Map(UInt32, UInt64))
 )
 ENGINE = AggregatingMergeTree
 PARTITION BY toYYYYMM(hour)
@@ -659,7 +659,7 @@ SELECT toStartOfMinute(if(we > ws AND we - ws <= 3600, StartTimeUnix, TimeUnix))
     0 AS duration_count, 0 AS duration_sum, CAST([], 'Array(Float64)') AS buckets,
     0 AS e2e_count, 0 AS e2e_sum, CAST([], 'Array(Float64)') AS e2e_buckets, 0 AS messages,
     max(TimeUnix) AS last_seen, groupUniqArrayMap(1000)(other) AS attributes,
-    sumMap(mapApply((k, v) -> (sipHash64(concat(k, '=', v)) % 100000, toFloat64(Count)), other)) AS attribute_counts
+    sumMap(mapApply((k, v) -> (sipHash64(concat(k, '=', v)) % 100000, Count), other)) AS attribute_counts
 FROM ${DATABASE}.ingest_histogram
 WHERE MetricName = 'code.flow.duration' AND AggregationTemporality = 1
 GROUP BY t, env, service, flow, flow_type, method, route, status_code, end_reason, destination, deployment;
@@ -678,7 +678,7 @@ SELECT toStartOfFiveMinutes(if(we > ws AND we - ws <= 3600, StartTimeUnix, TimeU
     ResourceAttributes['deployment.id'] AS deployment,
     0 AS calls, 0 AS errors, 0 AS duration_sum, 0 AS duration_count, CAST([], 'Array(Float64)') AS buckets,
     groupUniqArrayMap(1000)(other) AS attributes,
-    sumMap(mapApply((k, v) -> (sipHash64(concat(k, '=', v)) % 100000, toFloat64(Count)), other)) AS attribute_counts
+    sumMap(mapApply((k, v) -> (sipHash64(concat(k, '=', v)) % 100000, Count), other)) AS attribute_counts
 FROM ${DATABASE}.ingest_histogram
 WHERE MetricName = 'code.function.call.duration' AND AggregationTemporality = 1
 GROUP BY t, env, service, function, file, deployment;
