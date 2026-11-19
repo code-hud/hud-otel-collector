@@ -132,9 +132,9 @@ tables=$(curl -s -u hud_backend:Backend-pass-1234 localhost:18123 \
   --data-binary "SELECT groupArray(name) FROM (SELECT name FROM system.tables WHERE database = '$DB' AND name NOT LIKE '.inner%' ORDER BY name)")
 want="['calling_flow_1m','calling_flow_1m_runs','calling_flow_hourly','calling_flow_hourly_rollup','duration_bounds',\
 'flow_1m','flow_1m_attributes','flow_1m_duration','flow_1m_e2e','flow_1m_messages','flow_hourly',\
-'flow_hourly_rollup','function_5m','function_5m_attributes','function_5m_calls','function_5m_duration','function_caller_5m',\
-'function_caller_5m_calls','function_caller_5m_duration','function_caller_hourly','function_caller_hourly_rollup','function_hourly',\
-'function_hourly_rollup','ingest_exponential_histogram','ingest_gauge','ingest_histogram','ingest_sum',\
+'flow_hourly_rollup','function_5m','function_5m_attributes','function_5m_calls','function_5m_duration','function_hourly',\
+'function_hourly_rollup','function_metrics_5m','function_metrics_5m_calls','function_metrics_5m_duration','function_metrics_hourly',\
+'function_metrics_hourly_rollup','ingest_exponential_histogram','ingest_gauge','ingest_histogram','ingest_sum',\
 'ingest_summary','issue_1m','issue_1m_issues','issue_hourly','issue_hourly_rollup','labels','labels_flows',\
 'labels_functions','labels_sessions','metrics','otel_logs','session_flow_1m','session_flow_1m_issues',\
 'session_flow_1m_runs','session_flow_hourly','session_flow_hourly_rollup','session_health_1m',\
@@ -159,7 +159,8 @@ RESOURCE='{"attributes":[{"key":"service.name","value":{"stringValue":"smoke"}},
   {"key":"deployment.environment.name","value":{"stringValue":"smoke-env"}},{"key":"deployment.id","value":{"stringValue":"d1"}},
   {"key":"telemetry.sdk.version","value":{"stringValue":"1.12.5"}}]}'
 FUNCTION='"attributes":[{"key":"code.function.name","value":{"stringValue":"f"}},{"key":"code.flow.name","value":{"stringValue":"http|/x|get"}},
-  {"key":"code.function.caller.name","value":{"stringValue":"g"}},{"key":"hud.function.content_hash","value":{"stringValue":"h1"}},
+  {"key":"code.function.caller.name","value":{"stringValue":"g"}},{"key":"code.function.caller.file.path","value":{"stringValue":"g.ts"}},
+  {"key":"hud.function.content_hash","value":{"stringValue":"h1"}},
   {"key":"hud.function.kind","value":{"stringValue":"method"}}]'
 FLOW='"attributes":[{"key":"code.flow.name","value":{"stringValue":"http|/x|get"}},{"key":"code.flow.type","value":{"stringValue":"http"}},{"key":"http.response.status_code","value":{"intValue":"500"}}]'
 CALLER='"attributes":[{"key":"code.flow.name","value":{"stringValue":"http|/x|get"}},{"key":"hud.parent.service.name","value":{"stringValue":"caller"}},
@@ -213,7 +214,7 @@ poll sql smoke-clickstack \
   "SELECT sum(calls) FROM $DB.function_5m WHERE function = 'f' AND deployment = 'd1'=2" \
   "SELECT sum(duration_count) FROM $DB.function_5m WHERE function = 'f'=10" \
   "SELECT arrayCumSum(sumForEachMerge(buckets))[15] FROM $DB.function_5m WHERE function = 'f'=6" \
-  "SELECT sum(calls) FROM $DB.function_caller_hourly WHERE function = 'f' AND flow = 'http|/x|get' AND caller = 'g' AND content_hash = 'h1'=2" \
+  "SELECT sum(calls) FROM $DB.function_metrics_hourly WHERE function = 'f' AND flow = 'http|/x|get' AND caller = 'g' AND caller_file = 'g.ts' AND content_hash = 'h1'=2" \
   "SELECT sumMap(attribute_counts)[sipHash64('hud.function.kind=method') % 100000] FROM $DB.function_hourly WHERE function = 'f'=10" \
   "SELECT groupUniqArrayMapMerge(1000)(attributes)['telemetry.sdk.version'] FROM $DB.flow_hourly WHERE service = 'smoke'=['1.12.5']" \
   "SELECT arraySort(mapKeys(groupUniqArrayMapMerge(1000)(attributes))) FROM $DB.function_hourly WHERE function = 'f'=['hud.function.kind','telemetry.sdk.version']" \

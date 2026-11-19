@@ -20,14 +20,15 @@
 --   issue    hud.flow.issues by flow, fingerprint and user error, 1 minute
 --   calling_flow  hud.flow.calling_flows: runs by flow and the flow that called it (parent) and started it (root), 1 minute
 --   function code.function.* by function, file and deployment, 5 minutes
---   function_caller  code.function.* by function, caller function, flow, content hash and error type, 5 minutes
+--   function_metrics  code.function.* by function, caller function (name and file), flow, content hash and error type,
+--                     5 minutes
 -- labels holds every environment, service, flow and function seen, for the dashboard selectors.
 -- flow and function also keep every other attribute the SDK sends (a new one needs no migration), for 2 days in the
 -- fine tables and for good in the hourly ones: attributes holds up to 1000 values per attribute, attribute_counts the
 -- runs (calls) per 'attribute=value', keyed by sipHash64('attribute=value') % 100000 so a row holds at most 100000
 -- counts (values sharing a bucket add up). Session and host attributes stay out, so a row never grows with the number
 -- of pods, and so do the function's caller, content hash, short name and its flow's type, route and methods: they vary
--- per call, and function_caller has them (the flow's in its name).
+-- per call, and function_metrics has them (the flow's in its name).
 
 -- The exporter's metric tables, by column name (clickhouseexporter v0.165.0). Summaries and exponential histograms
 -- (none after transform/classic) are accepted and dropped.
@@ -276,32 +277,33 @@ ENGINE = AggregatingMergeTree
 PARTITION BY toYYYYMM(hour)
 ORDER BY (env, service, function, file, hour, deployment);
 
--- A function as called by one caller function in one flow. Error rows carry their error_type, call rows ''.
-CREATE TABLE IF NOT EXISTS ${DATABASE}.function_caller_5m
+-- A function as called by one caller function (name and file) in one flow. Error rows carry their error_type, call
+-- rows ''.
+CREATE TABLE IF NOT EXISTS ${DATABASE}.function_metrics_5m
 (
     t DateTime, env LowCardinality(String), service LowCardinality(String), function String, file String, caller String,
-    flow String, content_hash String, error_type String, deployment String,
+    caller_file String, flow String, content_hash String, error_type String, deployment String,
     calls SimpleAggregateFunction(sum, Float64), errors SimpleAggregateFunction(sum, Float64),
     duration_sum SimpleAggregateFunction(sum, Float64), duration_count SimpleAggregateFunction(sum, Float64),
     buckets AggregateFunction(sumForEach, Array(Float64))
 )
 ENGINE = AggregatingMergeTree
 PARTITION BY toDate(t)
-ORDER BY (env, service, function, file, t, caller, flow, content_hash, error_type, deployment)
+ORDER BY (env, service, function, file, t, caller, caller_file, flow, content_hash, error_type, deployment)
 TTL t + toIntervalDay(${HUD_METRICS_FINE_TTL_DAYS:-7})
 SETTINGS ttl_only_drop_parts = 1;
 
-CREATE TABLE IF NOT EXISTS ${DATABASE}.function_caller_hourly
+CREATE TABLE IF NOT EXISTS ${DATABASE}.function_metrics_hourly
 (
     hour DateTime, env LowCardinality(String), service LowCardinality(String), function String, file String, caller String,
-    flow String, content_hash String, error_type String, deployment String,
+    caller_file String, flow String, content_hash String, error_type String, deployment String,
     calls SimpleAggregateFunction(sum, Float64), errors SimpleAggregateFunction(sum, Float64),
     duration_sum SimpleAggregateFunction(sum, Float64), duration_count SimpleAggregateFunction(sum, Float64),
     buckets AggregateFunction(sumForEach, Array(Float64))
 )
 ENGINE = AggregatingMergeTree
 PARTITION BY toYYYYMM(hour)
-ORDER BY (env, service, function, file, hour, caller, flow, content_hash, error_type, deployment);
+ORDER BY (env, service, function, file, hour, caller, caller_file, flow, content_hash, error_type, deployment);
 
 -- Sessions have flow = function = '', flows have function = ''.
 CREATE TABLE IF NOT EXISTS ${DATABASE}.labels
@@ -508,13 +510,14 @@ ARRAY JOIN if(we > ws AND we - ws <= 3600,
 WHERE MetricName IN ('code.function.calls', 'code.function.errors') AND AggregationTemporality = 1
 GROUP BY t, env, service, function, file, deployment;
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.function_caller_5m_duration TO ${DATABASE}.function_caller_5m
+CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.function_metrics_5m_duration TO ${DATABASE}.function_metrics_5m
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
 WITH toUInt32(StartTimeUnix) AS ws, toUInt32(TimeUnix) AS we
 SELECT p.1 AS t,
     ResourceAttributes['deployment.environment.name'] AS env, ServiceName AS service,
     Attributes['code.function.name'] AS function, Attributes['code.file.path'] AS file,
-    Attributes['code.function.caller.name'] AS caller, Attributes['code.flow.name'] AS flow,
+    Attributes['code.function.caller.name'] AS caller, Attributes['code.function.caller.file.path'] AS caller_file,
+    Attributes['code.flow.name'] AS flow,
     Attributes['hud.function.content_hash'] AS content_hash, '' AS error_type, ResourceAttributes['deployment.id'] AS deployment,
     0 AS calls, 0 AS errors, sum(Sum * p.2) AS duration_sum, sum(Count * p.2) AS duration_count,
     sumForEachState(arrayMap(c -> c * p.2, BucketCounts)) AS buckets
@@ -524,15 +527,16 @@ ARRAY JOIN if(we > ws AND we - ws <= 3600,
         range(intDiv(ws, 300) * 300, we, 300)),
     [(toStartOfFiveMinutes(TimeUnix), 1.)]) AS p
 WHERE MetricName = 'code.function.call.duration' AND AggregationTemporality = 1
-GROUP BY t, env, service, function, file, caller, flow, content_hash, deployment;
+GROUP BY t, env, service, function, file, caller, caller_file, flow, content_hash, deployment;
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.function_caller_5m_calls TO ${DATABASE}.function_caller_5m
+CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.function_metrics_5m_calls TO ${DATABASE}.function_metrics_5m
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
 WITH toUInt32(StartTimeUnix) AS ws, toUInt32(TimeUnix) AS we
 SELECT p.1 AS t,
     ResourceAttributes['deployment.environment.name'] AS env, ServiceName AS service,
     Attributes['code.function.name'] AS function, Attributes['code.file.path'] AS file,
-    Attributes['code.function.caller.name'] AS caller, Attributes['code.flow.name'] AS flow,
+    Attributes['code.function.caller.name'] AS caller, Attributes['code.function.caller.file.path'] AS caller_file,
+    Attributes['code.flow.name'] AS flow,
     Attributes['hud.function.content_hash'] AS content_hash, Attributes['error.type'] AS error_type,
     ResourceAttributes['deployment.id'] AS deployment,
     sumIf(Value * p.2, MetricName = 'code.function.calls') AS calls,
@@ -544,7 +548,7 @@ ARRAY JOIN if(we > ws AND we - ws <= 3600,
         range(intDiv(ws, 300) * 300, we, 300)),
     [(toStartOfFiveMinutes(TimeUnix), 1.)]) AS p
 WHERE MetricName IN ('code.function.calls', 'code.function.errors') AND AggregationTemporality = 1
-GROUP BY t, env, service, function, file, caller, flow, content_hash, error_type, deployment;
+GROUP BY t, env, service, function, file, caller, caller_file, flow, content_hash, error_type, deployment;
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.labels_sessions TO ${DATABASE}.labels
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
@@ -622,13 +626,13 @@ SELECT toStartOfHour(t) AS hour, env, service, function, file, deployment,
 FROM ${DATABASE}.function_5m
 GROUP BY hour, env, service, function, file, deployment;
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.function_caller_hourly_rollup TO ${DATABASE}.function_caller_hourly
+CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.function_metrics_hourly_rollup TO ${DATABASE}.function_metrics_hourly
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
-SELECT toStartOfHour(t) AS hour, env, service, function, file, caller, flow, content_hash, error_type, deployment,
+SELECT toStartOfHour(t) AS hour, env, service, function, file, caller, caller_file, flow, content_hash, error_type, deployment,
     sum(calls) AS calls, sum(errors) AS errors, sum(duration_sum) AS duration_sum, sum(duration_count) AS duration_count,
     sumForEachMergeState(buckets) AS buckets
-FROM ${DATABASE}.function_caller_5m
-GROUP BY hour, env, service, function, file, caller, flow, content_hash, error_type, deployment;
+FROM ${DATABASE}.function_metrics_5m
+GROUP BY hour, env, service, function, file, caller, caller_file, flow, content_hash, error_type, deployment;
 
 -- The other attributes of each run (call), from the ingest table onto the fine row of the same key, and on to the hourly
 -- row with the rollup: the grouping must stay the same as the fine table's view, so the row merges into it. A delta is

@@ -77,7 +77,7 @@ buckets and batches the inserts.
 | `issue_1m`, `issue_hourly` | 1 minute, hour | flow, issue fingerprint and user error: issues |
 | `calling_flow_1m`, `calling_flow_hourly` | 1 minute, hour | flow, status code, and the flow that called it (parent) and started it (root): runs |
 | `function_5m`, `function_hourly` | 5 minutes, hour | function, file, deployment: calls, errors, duration |
-| `function_caller_5m`, `function_caller_hourly` | 5 minutes, hour | function, caller function, flow, content hash, error type, deployment: calls, errors, duration |
+| `function_metrics_5m`, `function_metrics_hourly` | 5 minutes, hour | function, caller function (name and file), flow, content hash, error type, deployment: calls, errors, duration |
 | `labels` | | every environment, service, flow and function seen (the dashboards' selectors) |
 
 Each fine table rolls up into its hourly table. Fine tables keep `HUD_METRICS_FINE_TTL_DAYS` days (default 7), hourly
@@ -86,7 +86,7 @@ no migration: 2 days in `flow_1m` and `function_5m` (at the export interval, 5 m
 `flow_hourly` and `function_hourly`. `attributes` holds up to 1000 values per attribute and `attribute_counts` the runs (calls) per
 `attribute=value`, keyed by `sipHash64('attribute=value') % 100000`. A row holds at most 100000 counts; values that share
 a bucket add up. Session and host attributes are left out, and so are a function's caller, content hash, short name and
-its flow's type, route and methods: `function_caller_*` has them as columns (the flow's in its name). Every listed value
+its flow's type, route and methods: `function_metrics_*` has them as columns (the flow's in its name). Every listed value
 with its runs:
 
 ```sql
