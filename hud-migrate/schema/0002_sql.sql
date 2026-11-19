@@ -14,9 +14,12 @@
 --
 -- The fine tables (below, at 1 or 5 minutes) are plain MergeTree holding plain values: every insert's rows stay as
 -- written (one per key, pod and view, nothing merged), so queries sum them (sum, sumForEach(buckets),
--- groupUniqArrayArrayMap(1000)(attributes)). They keep HUD_METRICS_FINE_TTL_DAYS days (default 30, only applies when a
--- table is created). Each fine table's insert rolls up into <name>_hourly, an AggregatingMergeTree of aggregate states
+-- groupUniqArrayArrayMap(1000)(attributes)). They keep 30 days: the dashboards read them up to 30 days back and the
+-- hourly tables beyond. Each fine table's insert rolls up into <name>_hourly, an AggregatingMergeTree of aggregate states
 -- that keeps everything: read it with -Merge, or finalizeAggregation() a column to union it with the fine table's.
+-- The views of one insert are not atomic: a failing view can leave others written, and the collector retries the whole
+-- batch. Every table below keeps the hashes of its last 10000 inserts (non_replicated_deduplication_window, as
+-- replicated tables do), so a retry only writes what is missing instead of counting the rest twice.
 --   flow              code.flow.duration, hud.flow.e2e.duration and hud.flow.messages by flow and status, 1 minute
 --   session_health    CPU, memory, event loop and uptime by SDK session (service.instance.id), 1 minute
 --   session_flow      runs, 5xx runs and issues by session and flow, 1 minute
@@ -122,8 +125,8 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.flow
 ENGINE = MergeTree
 PARTITION BY toDate(t)
 ORDER BY (env, service, flow, t, flow_type, method, route, status_code, end_reason, destination, deployment)
-TTL t + toIntervalDay(${HUD_METRICS_FINE_TTL_DAYS:-30})
-SETTINGS ttl_only_drop_parts = 1;
+TTL t + toIntervalDay(30)
+SETTINGS ttl_only_drop_parts = 1, non_replicated_deduplication_window = 10000;
 
 CREATE TABLE IF NOT EXISTS ${DATABASE}.flow_hourly
 (
@@ -140,7 +143,8 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.flow_hourly
 )
 ENGINE = AggregatingMergeTree
 PARTITION BY toYYYYMM(hour)
-ORDER BY (env, service, flow, hour, flow_type, method, route, status_code, end_reason, destination, deployment);
+ORDER BY (env, service, flow, hour, flow_type, method, route, status_code, end_reason, destination, deployment)
+SETTINGS non_replicated_deduplication_window = 10000;
 
 -- One row per session and minute it reported process metrics. uptime is the latest process.uptime (it only grows),
 -- so the session started at last_seen - uptime. elu averages over the event loop's threads.
@@ -158,8 +162,8 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.session_health
 ENGINE = MergeTree
 PARTITION BY toDate(t)
 ORDER BY (env, service, instance, t, deployment, pod)
-TTL t + toIntervalDay(${HUD_METRICS_FINE_TTL_DAYS:-30})
-SETTINGS ttl_only_drop_parts = 1;
+TTL t + toIntervalDay(30)
+SETTINGS ttl_only_drop_parts = 1, non_replicated_deduplication_window = 10000;
 
 CREATE TABLE IF NOT EXISTS ${DATABASE}.session_health_hourly
 (
@@ -174,7 +178,8 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.session_health_hourly
 )
 ENGINE = AggregatingMergeTree
 PARTITION BY toYYYYMM(hour)
-ORDER BY (env, service, instance, hour, deployment, pod);
+ORDER BY (env, service, instance, hour, deployment, pod)
+SETTINGS non_replicated_deduplication_window = 10000;
 
 -- errors: runs with a 5xx status. issues: hud.flow.issues of every flow type.
 CREATE TABLE IF NOT EXISTS ${DATABASE}.session_flow
@@ -187,8 +192,8 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.session_flow
 ENGINE = MergeTree
 PARTITION BY toDate(t)
 ORDER BY (env, service, instance, t, flow, flow_type)
-TTL t + toIntervalDay(${HUD_METRICS_FINE_TTL_DAYS:-30})
-SETTINGS ttl_only_drop_parts = 1;
+TTL t + toIntervalDay(30)
+SETTINGS ttl_only_drop_parts = 1, non_replicated_deduplication_window = 10000;
 
 CREATE TABLE IF NOT EXISTS ${DATABASE}.session_flow_hourly
 (
@@ -199,7 +204,8 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.session_flow_hourly
 )
 ENGINE = AggregatingMergeTree
 PARTITION BY toYYYYMM(hour)
-ORDER BY (env, service, instance, hour, flow, flow_type);
+ORDER BY (env, service, instance, hour, flow, flow_type)
+SETTINGS non_replicated_deduplication_window = 10000;
 
 CREATE TABLE IF NOT EXISTS ${DATABASE}.issue
 (
@@ -210,8 +216,8 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.issue
 ENGINE = MergeTree
 PARTITION BY toDate(t)
 ORDER BY (env, service, flow, t, fingerprint, framework_result, caught, flow_type, user_error)
-TTL t + toIntervalDay(${HUD_METRICS_FINE_TTL_DAYS:-30})
-SETTINGS ttl_only_drop_parts = 1;
+TTL t + toIntervalDay(30)
+SETTINGS ttl_only_drop_parts = 1, non_replicated_deduplication_window = 10000;
 
 CREATE TABLE IF NOT EXISTS ${DATABASE}.issue_hourly
 (
@@ -221,7 +227,8 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.issue_hourly
 )
 ENGINE = AggregatingMergeTree
 PARTITION BY toYYYYMM(hour)
-ORDER BY (env, service, flow, hour, fingerprint, framework_result, caught, flow_type, user_error);
+ORDER BY (env, service, flow, hour, fingerprint, framework_result, caught, flow_type, user_error)
+SETTINGS non_replicated_deduplication_window = 10000;
 
 -- parent and root are the calling flows (multiple: the run had more than one). The rest of the attributes are the
 -- flow's own, as on code.flow.duration.
@@ -237,8 +244,8 @@ ENGINE = MergeTree
 PARTITION BY toDate(t)
 ORDER BY (env, service, flow, t, parent_service, parent_flow, root_service, root_flow, flow_type, status_code, parent_multiple,
     root_multiple, deployment)
-TTL t + toIntervalDay(${HUD_METRICS_FINE_TTL_DAYS:-30})
-SETTINGS ttl_only_drop_parts = 1;
+TTL t + toIntervalDay(30)
+SETTINGS ttl_only_drop_parts = 1, non_replicated_deduplication_window = 10000;
 
 CREATE TABLE IF NOT EXISTS ${DATABASE}.calling_flow_hourly
 (
@@ -251,7 +258,8 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.calling_flow_hourly
 ENGINE = AggregatingMergeTree
 PARTITION BY toYYYYMM(hour)
 ORDER BY (env, service, flow, hour, parent_service, parent_flow, root_service, root_flow, flow_type, status_code, parent_multiple,
-    root_multiple, deployment);
+    root_multiple, deployment)
+SETTINGS non_replicated_deduplication_window = 10000;
 
 CREATE TABLE IF NOT EXISTS ${DATABASE}.function
 (
@@ -265,8 +273,8 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.function
 ENGINE = MergeTree
 PARTITION BY toDate(t)
 ORDER BY (env, service, function, file, t, deployment)
-TTL t + toIntervalDay(${HUD_METRICS_FINE_TTL_DAYS:-30})
-SETTINGS ttl_only_drop_parts = 1;
+TTL t + toIntervalDay(30)
+SETTINGS ttl_only_drop_parts = 1, non_replicated_deduplication_window = 10000;
 
 CREATE TABLE IF NOT EXISTS ${DATABASE}.function_hourly
 (
@@ -279,7 +287,8 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.function_hourly
 )
 ENGINE = AggregatingMergeTree
 PARTITION BY toYYYYMM(hour)
-ORDER BY (env, service, function, file, hour, deployment);
+ORDER BY (env, service, function, file, hour, deployment)
+SETTINGS non_replicated_deduplication_window = 10000;
 
 -- A function as called by one caller function (name and file) in one flow. Error rows carry their error_type, call
 -- rows ''.
@@ -294,8 +303,8 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.function_metrics
 ENGINE = MergeTree
 PARTITION BY toDate(t)
 ORDER BY (env, service, function, file, t, caller, caller_file, flow, content_hash, error_type, deployment)
-TTL t + toIntervalDay(${HUD_METRICS_FINE_TTL_DAYS:-30})
-SETTINGS ttl_only_drop_parts = 1;
+TTL t + toIntervalDay(30)
+SETTINGS ttl_only_drop_parts = 1, non_replicated_deduplication_window = 10000;
 
 CREATE TABLE IF NOT EXISTS ${DATABASE}.function_metrics_hourly
 (
@@ -307,7 +316,8 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.function_metrics_hourly
 )
 ENGINE = AggregatingMergeTree
 PARTITION BY toYYYYMM(hour)
-ORDER BY (env, service, function, file, hour, caller, caller_file, flow, content_hash, error_type, deployment);
+ORDER BY (env, service, function, file, hour, caller, caller_file, flow, content_hash, error_type, deployment)
+SETTINGS non_replicated_deduplication_window = 10000;
 
 -- Sessions have flow = function = '', flows have function = ''.
 CREATE TABLE IF NOT EXISTS ${DATABASE}.labels
@@ -316,7 +326,8 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.labels
     last_seen SimpleAggregateFunction(max, DateTime)
 )
 ENGINE = AggregatingMergeTree
-ORDER BY (env, service, flow, function);
+ORDER BY (env, service, flow, function)
+SETTINGS non_replicated_deduplication_window = 10000;
 
 -- Fine tables, from the ingest tables. Each delta row joins its buckets p = (bucket start, the share of the interval
 -- in that bucket).

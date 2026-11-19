@@ -82,9 +82,12 @@ buckets and batches the inserts.
 
 Each fine table rolls up into its hourly table. Fine tables are plain `MergeTree` of plain values (every insert's rows
 kept as written, one per key, pod and view): sum them with `sum`, `sumForEach(buckets)` and
-`groupUniqArrayArrayMap(1000)(attributes)`. They keep `HUD_METRICS_FINE_TTL_DAYS` days (default 30). Hourly tables are
+`groupUniqArrayArrayMap(1000)(attributes)`. They keep 30 days, fixed because the dashboards read them up to 30 days back
+and the hourly tables beyond. Hourly tables are
 `AggregatingMergeTree` of aggregate states and keep everything: read them with `-Merge`, or `finalizeAggregation()` a
-column to union it with the fine table's. The flow and function tables also keep every other attribute the SDK sends,
+column to union it with the fine table's. The views of one insert are not atomic (a failing view can leave others
+written) and the collector retries the whole batch, so every metric table keeps the hashes of its last 10000 inserts
+(`non_replicated_deduplication_window`) and a retry only writes what is missing. The flow and function tables also keep every other attribute the SDK sends,
 so a new one needs no migration (in `flow` and `function` at the export interval, 5 minutes by default). `attributes` holds up to
 1000 values per attribute and `attribute_counts` the runs (calls) per `attribute=value`, keyed by
 `sipHash64('attribute=value') % 100000`; `hud_attribute_count(attribute, value, counts)` (created by the admin's
@@ -127,9 +130,8 @@ once is safe.
 Environment: `CLICKHOUSE_ENDPOINT` (`tcp://`, `http://` or `https://`), `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`,
 `CLICKHOUSE_TLS_INSECURE_SKIP_VERIFY` (`true` for a self-signed certificate; the collector config reads it too),
 `HUD_CLICKHOUSE_DATABASE` (default `hud_otel`; the collector config reads the same variable, like ClickStack's
-`HYPERDX_OTEL_EXPORTER_CLICKHOUSE_DATABASE`), `HUD_LOGS_TTL_DAYS` (default 30) and `HUD_METRICS_FINE_TTL_DAYS`
-(default 30, the 1- and 5-minute metric tables); both only apply when a table is created, later changes don't touch an
-existing table. With `HUD_SCHEMA_MANAGED=false` it exits without connecting, for customers who run the same SQL themselves.
+`HYPERDX_OTEL_EXPORTER_CLICKHOUSE_DATABASE`) and `HUD_LOGS_TTL_DAYS` (default 30; only applies when `otel_logs` is
+created, later changes don't touch the existing table). With `HUD_SCHEMA_MANAGED=false` it exits without connecting, for customers who run the same SQL themselves.
 
 Rules for `hud-migrate/schema/*.sql`, as in ClickStack:
 

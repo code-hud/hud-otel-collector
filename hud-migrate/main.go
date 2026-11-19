@@ -6,8 +6,7 @@
 // Environment: CLICKHOUSE_ENDPOINT (a clickhouse-go DSN: tcp://, clickhouse://, http:// or https://; the
 // collector's endpoint works as is), CLICKHOUSE_USER, CLICKHOUSE_PASSWORD, CLICKHOUSE_TLS_INSECURE_SKIP_VERIFY,
 // HUD_CLICKHOUSE_DATABASE (default hud_otel, ${DATABASE} in the schema files),
-// HUD_LOGS_TTL_DAYS (default 30, only used when otel_logs is created), HUD_METRICS_FINE_TTL_DAYS (default 30, only used
-// when the 1- and 5-minute metric tables are created). HUD_SCHEMA_MANAGED=false makes it exit
+// HUD_LOGS_TTL_DAYS (default 30, only used when otel_logs is created). HUD_SCHEMA_MANAGED=false makes it exit
 // without connecting, for customers who run the migrations themselves.
 package main
 
