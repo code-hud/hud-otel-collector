@@ -71,28 +71,32 @@ buckets and batches the inserts.
 
 | Tables | Grain | One row per (and what it sums) |
 | --- | --- | --- |
-| `flow_1m`, `flow_hourly` | 1 minute, hour | flow, status code, method, route, end reason, queue, deployment: runs, duration, queue latency (e2e), messages |
-| `session_health_1m`, `session_health_hourly` | 1 minute, hour | SDK session (`service.instance.id`) and its pod: last report, uptime, CPU, memory and its limit, event loop utilization |
-| `session_flow_1m`, `session_flow_hourly` | 1 minute, hour | session and flow: runs, 5xx runs, issues |
-| `issue_1m`, `issue_hourly` | 1 minute, hour | flow, issue fingerprint and user error: issues |
-| `calling_flow_1m`, `calling_flow_hourly` | 1 minute, hour | flow, status code, and the flow that called it (parent) and started it (root): runs |
-| `function_5m`, `function_hourly` | 5 minutes, hour | function, file, deployment: calls, errors, duration |
-| `function_metrics_5m`, `function_metrics_hourly` | 5 minutes, hour | function, caller function (name and file), flow, content hash, error type, deployment: calls, errors, duration |
+| `flow`, `flow_hourly` | 1 minute, hour | flow, status code, method, route, end reason, queue, deployment: runs, duration, queue latency (e2e), messages |
+| `session_health`, `session_health_hourly` | 1 minute, hour | SDK session (`service.instance.id`) and its pod: last report, uptime, CPU, memory and its limit, event loop utilization |
+| `session_flow`, `session_flow_hourly` | 1 minute, hour | session and flow: runs, 5xx runs, issues |
+| `issue`, `issue_hourly` | 1 minute, hour | flow, issue fingerprint and user error: issues |
+| `calling_flow`, `calling_flow_hourly` | 1 minute, hour | flow, status code, and the flow that called it (parent) and started it (root): runs |
+| `function`, `function_hourly` | 5 minutes, hour | function, file, deployment: calls, errors, duration |
+| `function_metrics`, `function_metrics_hourly` | 5 minutes, hour | function, caller function (name and file), flow, content hash, error type, deployment: calls, errors, duration |
 | `labels` | | every environment, service, flow and function seen (the dashboards' selectors) |
 
-Each fine table rolls up into its hourly table. Fine tables keep `HUD_METRICS_FINE_TTL_DAYS` days (default 7), hourly
-tables keep everything. The flow and function tables also keep every other attribute the SDK sends, so a new one needs
-no migration: 2 days in `flow_1m` and `function_5m` (at the export interval, 5 minutes by default), for good in
-`flow_hourly` and `function_hourly`. `attributes` holds up to 1000 values per attribute and `attribute_counts` the runs (calls) per
-`attribute=value`, keyed by `sipHash64('attribute=value') % 100000`. A row holds at most 100000 counts; values that share
-a bucket add up. Session and host attributes are left out, and so are a function's caller, content hash, short name and
-its flow's type, route and methods: `function_metrics_*` has them as columns (the flow's in its name). Every listed value
+Each fine table rolls up into its hourly table. Fine tables are plain `MergeTree` of plain values (every insert's rows
+kept as written, one per key, pod and view): sum them with `sum`, `sumForEach(buckets)` and
+`groupUniqArrayArrayMap(1000)(attributes)`. They keep `HUD_METRICS_FINE_TTL_DAYS` days (default 30). Hourly tables are
+`AggregatingMergeTree` of aggregate states and keep everything: read them with `-Merge`, or `finalizeAggregation()` a
+column to union it with the fine table's. The flow and function tables also keep every other attribute the SDK sends,
+so a new one needs no migration (in `flow` and `function` at the export interval, 5 minutes by default). `attributes` holds up to
+1000 values per attribute and `attribute_counts` the runs (calls) per `attribute=value`, keyed by
+`sipHash64('attribute=value') % 100000`; `hud_attribute_count(attribute, value, counts)` (created by the admin's
+`setup.sql`, since functions are server-wide) reads one. A row holds at most 100000 counts; values that share a bucket
+add up. Session and host attributes are left out, and so are a function's caller, content hash, short name and its
+flow's type, route and methods: `function_metrics_*` has them as columns (the flow's in its name). Every listed value
 with its runs:
 
 ```sql
-SELECT k AS attribute, v AS value, counts[sipHash64(concat(k, '=', v)) % 100000] AS runs
+SELECT k AS attribute, v AS value, hud_attribute_count(k, v, counts) AS runs
 FROM (
-  SELECT groupUniqArrayMapMerge(1000)(attributes) AS vals, sumMap(attribute_counts) AS counts
+  SELECT groupUniqArrayArrayMapMerge(1000)(attributes) AS vals, sumMap(attribute_counts) AS counts
   FROM hud_otel.function_hourly WHERE service = 'checkout' AND hour >= now() - INTERVAL 1 DAY
 )
 ARRAY JOIN mapKeys(vals) AS k, mapValues(vals) AS vs
@@ -124,7 +128,7 @@ Environment: `CLICKHOUSE_ENDPOINT` (`tcp://`, `http://` or `https://`), `CLICKHO
 `CLICKHOUSE_TLS_INSECURE_SKIP_VERIFY` (`true` for a self-signed certificate; the collector config reads it too),
 `HUD_CLICKHOUSE_DATABASE` (default `hud_otel`; the collector config reads the same variable, like ClickStack's
 `HYPERDX_OTEL_EXPORTER_CLICKHOUSE_DATABASE`), `HUD_LOGS_TTL_DAYS` (default 30) and `HUD_METRICS_FINE_TTL_DAYS`
-(default 7, the 1- and 5-minute metric tables); both only apply when a table is created, later changes don't touch an
+(default 30, the 1- and 5-minute metric tables); both only apply when a table is created, later changes don't touch an
 existing table. With `HUD_SCHEMA_MANAGED=false` it exits without connecting, for customers who run the same SQL themselves.
 
 Rules for `hud-migrate/schema/*.sql`, as in ClickStack:

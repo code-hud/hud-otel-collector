@@ -20,3 +20,9 @@ CREATE USER IF NOT EXISTS hud_migrator  IDENTIFIED WITH sha256_password BY 'Migr
 -- sha256('Backend-pass-1234'); Hud keeps the password.
 CREATE USER IF NOT EXISTS hud_backend IDENTIFIED WITH sha256_hash BY 'ed686e00633030dbf048d58bb84477ce6e9d443ed1da58a76e6386d644f19ee2' DEFAULT ROLE hud_read;
 GRANT hud_write TO hud_collector; GRANT hud_ddl TO hud_migrator; GRANT hud_read TO hud_backend;
+
+-- The runs (calls) of 'attribute=value' in an attribute_counts map (one row's, or sumMap(attribute_counts) over many),
+-- 0 when absent. Functions are server-wide and CREATE FUNCTION is a global grant, so the admin creates it, not
+-- hud-migrate. The key must match the attribute_counts views in hud-migrate/schema/0002_sql.sql.
+CREATE FUNCTION IF NOT EXISTS hud_attribute_count AS (attribute, value, counts) ->
+  counts[sipHash64(concat(attribute, '=', value)) % 100000];

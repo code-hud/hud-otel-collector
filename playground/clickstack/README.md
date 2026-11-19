@@ -26,8 +26,8 @@ from the 1-minute flow table (`buckets[k]` counts durations up to `duration_boun
 ```sh
 curl -s -u hud_backend:Backend-pass-1234 localhost:8123 --data-binary "
   SELECT flow, sum(duration_count) AS runs, sumIf(duration_count, startsWith(status_code, '5')) AS errors_5xx,
-    arrayFirstIndex(c -> c >= 0.9 * runs, arrayCumSum(sumForEachMerge(buckets))) AS p90_bucket
-  FROM hud_otel.flow_1m WHERE t >= now() - INTERVAL 1 HOUR GROUP BY flow FORMAT PrettyCompact"
+    arrayFirstIndex(c -> c >= 0.9 * runs, arrayCumSum(sumForEach(buckets))) AS p90_bucket
+  FROM hud_otel.flow WHERE t >= now() - INTERVAL 1 HOUR GROUP BY flow FORMAT PrettyCompact"
 ```
 
 Logs:

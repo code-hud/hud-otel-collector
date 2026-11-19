@@ -130,15 +130,15 @@ pids=(); for _ in 1 2 3 4; do migrate up & pids+=($!); done
 for p in "${pids[@]}"; do wait "$p"; done
 tables=$(curl -s -u hud_backend:Backend-pass-1234 localhost:18123 \
   --data-binary "SELECT groupArray(name) FROM (SELECT name FROM system.tables WHERE database = '$DB' AND name NOT LIKE '.inner%' ORDER BY name)")
-want="['calling_flow_1m','calling_flow_1m_runs','calling_flow_hourly','calling_flow_hourly_rollup','duration_bounds',\
-'flow_1m','flow_1m_attributes','flow_1m_duration','flow_1m_e2e','flow_1m_messages','flow_hourly',\
-'flow_hourly_rollup','function_5m','function_5m_attributes','function_5m_calls','function_5m_duration','function_hourly',\
-'function_hourly_rollup','function_metrics_5m','function_metrics_5m_calls','function_metrics_5m_duration','function_metrics_hourly',\
+want="['calling_flow','calling_flow_hourly','calling_flow_hourly_rollup','calling_flow_runs','duration_bounds','flow',\
+'flow_attributes','flow_duration','flow_e2e','flow_hourly','flow_hourly_rollup','flow_messages','function',\
+'function_attributes','function_calls','function_duration','function_hourly','function_hourly_rollup',\
+'function_metrics','function_metrics_calls','function_metrics_duration','function_metrics_hourly',\
 'function_metrics_hourly_rollup','ingest_exponential_histogram','ingest_gauge','ingest_histogram','ingest_sum',\
-'ingest_summary','issue_1m','issue_1m_issues','issue_hourly','issue_hourly_rollup','labels','labels_flows',\
-'labels_functions','labels_sessions','metrics','otel_logs','session_flow_1m','session_flow_1m_issues',\
-'session_flow_1m_runs','session_flow_hourly','session_flow_hourly_rollup','session_health_1m',\
-'session_health_1m_gauge','session_health_1m_sum','session_health_hourly','session_health_hourly_rollup']"
+'ingest_summary','issue','issue_hourly','issue_hourly_rollup','issue_issues','labels','labels_flows',\
+'labels_functions','labels_sessions','metrics','otel_logs','session_flow','session_flow_hourly',\
+'session_flow_hourly_rollup','session_flow_issues','session_flow_runs','session_health','session_health_gauge',\
+'session_health_hourly','session_health_hourly_rollup','session_health_sum']"
 [ "$tables" = "$want" ] || { echo "FAIL: $DB has $tables after up, want $want"; exit 1; }
 for q in "DROP TABLE $DB.otel_logs" "ALTER TABLE $DB.otel_logs ADD INDEX smoke_idx Body TYPE bloom_filter" \
   "DROP DATABASE $DB" "CREATE DATABASE hud_otel"; do
@@ -201,36 +201,36 @@ EOF
 # As hud_backend, the read-only user Hud's backend gets. Bucket k of the transform/classic grid is buckets[k + 1]:
 # le=0.0884 is [14], le=0.125 is [15], le=0.177 is [16].
 sql() { curl -s -u hud_backend:Backend-pass-1234 localhost:18123 --data-binary "$1"; }
-F="$DB.flow_1m WHERE service = 'smoke' AND env = 'smoke-env'"
+F="$DB.flow WHERE service = 'smoke' AND env = 'smoke-env'"
 poll sql smoke-clickstack \
   "SELECT sum(messages) FROM $F=2" \
   "SELECT sum(duration_count) FROM $F AND flow = 'http|/x|get' AND status_code = '500' AND deployment = 'd1'=10" \
-  "SELECT arrayCumSum(sumForEachMerge(buckets))[14] FROM $F=0" \
-  "SELECT arrayCumSum(sumForEachMerge(buckets))[15] FROM $F=6" \
-  "SELECT arrayCumSum(sumForEachMerge(buckets))[16] FROM $F=10" \
+  "SELECT arrayCumSum(sumForEach(buckets))[14] FROM $F=0" \
+  "SELECT arrayCumSum(sumForEach(buckets))[15] FROM $F=6" \
+  "SELECT arrayCumSum(sumForEach(buckets))[16] FROM $F=10" \
   "SELECT sum(duration_count) FROM $DB.flow_hourly WHERE service = 'smoke'=10" \
-  "SELECT sum(runs) FROM $DB.session_flow_1m WHERE instance = 'pod-a'=10" \
-  "SELECT sum(errors) FROM $DB.session_flow_1m WHERE instance = 'pod-a'=10" \
-  "SELECT sum(calls) FROM $DB.function_5m WHERE function = 'f' AND deployment = 'd1'=2" \
-  "SELECT sum(duration_count) FROM $DB.function_5m WHERE function = 'f'=10" \
-  "SELECT arrayCumSum(sumForEachMerge(buckets))[15] FROM $DB.function_5m WHERE function = 'f'=6" \
+  "SELECT sum(runs) FROM $DB.session_flow WHERE instance = 'pod-a'=10" \
+  "SELECT sum(errors) FROM $DB.session_flow WHERE instance = 'pod-a'=10" \
+  "SELECT sum(calls) FROM $DB.function WHERE function = 'f' AND deployment = 'd1'=2" \
+  "SELECT sum(duration_count) FROM $DB.function WHERE function = 'f'=10" \
+  "SELECT arrayCumSum(sumForEach(buckets))[15] FROM $DB.function WHERE function = 'f'=6" \
   "SELECT sum(calls) FROM $DB.function_metrics_hourly WHERE function = 'f' AND flow = 'http|/x|get' AND caller = 'g' AND caller_file = 'g.ts' AND content_hash = 'h1'=2" \
-  "SELECT sumMap(attribute_counts)[sipHash64('hud.function.kind=method') % 100000] FROM $DB.function_hourly WHERE function = 'f'=10" \
-  "SELECT groupUniqArrayMapMerge(1000)(attributes)['telemetry.sdk.version'] FROM $DB.flow_hourly WHERE service = 'smoke'=['1.12.5']" \
-  "SELECT arraySort(mapKeys(groupUniqArrayMapMerge(1000)(attributes))) FROM $DB.function_hourly WHERE function = 'f'=['hud.function.kind','telemetry.sdk.version']" \
+  "SELECT hud_attribute_count('hud.function.kind', 'method', sumMap(attribute_counts)) FROM $DB.function_hourly WHERE function = 'f'=10" \
+  "SELECT groupUniqArrayArrayMapMerge(1000)(attributes)['telemetry.sdk.version'] FROM $DB.flow_hourly WHERE service = 'smoke'=['1.12.5']" \
+  "SELECT arraySort(mapKeys(groupUniqArrayArrayMapMerge(1000)(attributes))) FROM $DB.function_hourly WHERE function = 'f'=['hud.function.kind','telemetry.sdk.version']" \
   "SELECT length(sumMap(attribute_counts)) FROM $DB.function_hourly WHERE function = 'f'=2" \
-  "SELECT sumMap(attribute_counts)[sipHash64('hud.function.kind=method') % 100000] FROM $DB.function_5m WHERE function = 'f'=10" \
-  "SELECT groupUniqArrayMapMerge(1000)(attributes)['telemetry.sdk.version'] FROM $F=['1.12.5']" \
-  "SELECT countIf(duration_count = 0) FROM $DB.function_5m FINAL WHERE function = 'f'=0" \
-  "SELECT countIf(duration_count = 0) FROM $DB.flow_1m FINAL WHERE service = 'smoke' AND flow = 'http|/x|get'=0" \
-  "SELECT max(uptime) FROM $DB.session_health_1m WHERE instance = 'pod-a' AND env = 'smoke-env' AND last_seen > 0=42" \
-  "SELECT sum(runs) FROM $DB.calling_flow_1m WHERE flow = 'http|/x|get' AND parent_service = 'caller' AND parent_flow = 'kafka|t|g' AND root_service = 'edge' AND root_flow = 'http|/y|post'=8" \
+  "SELECT hud_attribute_count('hud.function.kind', 'method', sumMap(attribute_counts)) FROM $DB.function WHERE function = 'f'=10" \
+  "SELECT groupUniqArrayArrayMap(1000)(attributes)['telemetry.sdk.version'] FROM $F=['1.12.5']" \
+  "SELECT countIf(duration_count = 0) FROM $DB.function_hourly FINAL WHERE function = 'f'=0" \
+  "SELECT countIf(duration_count = 0) FROM $DB.flow_hourly FINAL WHERE service = 'smoke' AND flow = 'http|/x|get'=0" \
+  "SELECT max(uptime) FROM $DB.session_health WHERE instance = 'pod-a' AND env = 'smoke-env' AND last_seen > 0=42" \
+  "SELECT sum(runs) FROM $DB.calling_flow WHERE flow = 'http|/x|get' AND parent_service = 'caller' AND parent_flow = 'kafka|t|g' AND root_service = 'edge' AND root_flow = 'http|/y|post'=8" \
   "SELECT sum(runs) FROM $DB.calling_flow_hourly WHERE parent_service = 'caller'=8" \
   "SELECT sum(issues) FROM $DB.issue_hourly WHERE fingerprint = 'fp' AND caught = 'false' AND user_error = 'card declined'=2" \
-  "SELECT sum(issues) FROM $DB.session_flow_1m WHERE instance = 'pod-a'=2" \
+  "SELECT sum(issues) FROM $DB.session_flow WHERE instance = 'pod-a'=2" \
   "SELECT groupArray(flow || '/' || function) FROM (SELECT DISTINCT flow, function FROM $DB.labels WHERE service = 'smoke' ORDER BY ALL)=['/','http|/x|get/','http|/x|get/f']" \
-  "SELECT groupArray(round(m, 9)) FROM (SELECT t, sum(messages) AS m FROM $DB.flow_1m WHERE service = 'smoke-spread' GROUP BY t ORDER BY t)=[1.5,3,3,1.5]" \
-  "SELECT groupArray(round(c, 9)) FROM (SELECT t, sum(calls) AS c FROM $DB.function_5m WHERE service = 'smoke-spread' GROUP BY t ORDER BY t)=[6,3]"
+  "SELECT groupArray(round(m, 9)) FROM (SELECT t, sum(messages) AS m FROM $DB.flow WHERE service = 'smoke-spread' GROUP BY t ORDER BY t)=[1.5,3,3,1.5]" \
+  "SELECT groupArray(round(c, 9)) FROM (SELECT t, sum(calls) AS c FROM $DB.function WHERE service = 'smoke-spread' GROUP BY t ORDER BY t)=[6,3]"
 poll sql smoke-clickstack "SELECT count() FROM $DB.otel_logs WHERE EventName = 'hud.forensic' AND ServiceName = 'smoke'=1"
 
 echo "--- TLS: hud-migrate and the collector on the https endpoint form Cloud uses (https://host:8443, trailing slash ok for hud-migrate)"
@@ -250,5 +250,5 @@ curl -sf -X POST localhost:14320/v1/logs -H 'Content-Type: application/json' -d 
 {"resourceLogs":[{"resource":$TLS_RESOURCE,"scopeLogs":[{"logRecords":[
   {"timeUnixNano":"$((BASE * 1000000000))","eventName":"hud.forensic","severityText":"INFO","body":{"stringValue":"{}"}}]}]}]}
 EOF
-poll sql smoke-clickstack-tls "SELECT sum(messages) FROM $DB.flow_1m WHERE service = 'smoke-tls'=3"
+poll sql smoke-clickstack-tls "SELECT sum(messages) FROM $DB.flow WHERE service = 'smoke-tls'=3"
 poll sql smoke-clickstack-tls "SELECT count() FROM $DB.otel_logs WHERE ServiceName = 'smoke-tls'=1"
