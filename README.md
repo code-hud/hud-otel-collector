@@ -85,7 +85,9 @@ tables keep everything. The flow and function tables also keep every other attri
 no migration: 2 days in `flow_1m` and `function_5m` (at the export interval, 5 minutes by default), for good in
 `flow_hourly` and `function_hourly`. `attributes` holds up to 1000 values per attribute and `attribute_counts` the runs (calls) per
 `attribute=value`, keyed by `sipHash64('attribute=value') % 100000`. A row holds at most 100000 counts; values that share
-a bucket add up. Session and host attributes are left out. Every listed value with its runs:
+a bucket add up. Session and host attributes are left out, and so are a function's caller, content hash, short name and
+its flow's type, route and methods: `function_caller_*` has them as columns (the flow's in its name). Every listed value
+with its runs:
 
 ```sql
 SELECT k AS attribute, v AS value, counts[sipHash64(concat(k, '=', v)) % 100000] AS runs

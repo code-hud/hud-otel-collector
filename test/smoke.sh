@@ -159,6 +159,7 @@ RESOURCE='{"attributes":[{"key":"service.name","value":{"stringValue":"smoke"}},
   {"key":"deployment.environment.name","value":{"stringValue":"smoke-env"}},{"key":"deployment.id","value":{"stringValue":"d1"}},
   {"key":"telemetry.sdk.version","value":{"stringValue":"1.12.5"}}]}'
 FUNCTION='"attributes":[{"key":"code.function.name","value":{"stringValue":"f"}},{"key":"code.flow.name","value":{"stringValue":"http|/x|get"}},
+  {"key":"code.function.caller.name","value":{"stringValue":"g"}},{"key":"hud.function.content_hash","value":{"stringValue":"h1"}},
   {"key":"hud.function.kind","value":{"stringValue":"method"}}]'
 FLOW='"attributes":[{"key":"code.flow.name","value":{"stringValue":"http|/x|get"}},{"key":"code.flow.type","value":{"stringValue":"http"}},{"key":"http.response.status_code","value":{"intValue":"500"}}]'
 CALLER='"attributes":[{"key":"code.flow.name","value":{"stringValue":"http|/x|get"}},{"key":"hud.parent.service.name","value":{"stringValue":"caller"}},
@@ -212,7 +213,7 @@ poll sql smoke-clickstack \
   "SELECT sum(calls) FROM $DB.function_5m WHERE function = 'f' AND deployment = 'd1'=2" \
   "SELECT sum(duration_count) FROM $DB.function_5m WHERE function = 'f'=10" \
   "SELECT arrayCumSum(sumForEachMerge(buckets))[15] FROM $DB.function_5m WHERE function = 'f'=6" \
-  "SELECT sum(calls) FROM $DB.function_caller_hourly WHERE function = 'f' AND flow = 'http|/x|get'=2" \
+  "SELECT sum(calls) FROM $DB.function_caller_hourly WHERE function = 'f' AND flow = 'http|/x|get' AND caller = 'g' AND content_hash = 'h1'=2" \
   "SELECT sumMap(attribute_counts)[sipHash64('hud.function.kind=method') % 100000] FROM $DB.function_hourly WHERE function = 'f'=10" \
   "SELECT groupUniqArrayMapMerge(1000)(attributes)['telemetry.sdk.version'] FROM $DB.flow_hourly WHERE service = 'smoke'=['1.12.5']" \
   "SELECT arraySort(mapKeys(groupUniqArrayMapMerge(1000)(attributes))) FROM $DB.function_hourly WHERE function = 'f'=['hud.function.kind','telemetry.sdk.version']" \

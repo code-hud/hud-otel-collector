@@ -26,7 +26,8 @@
 -- fine tables and for good in the hourly ones: attributes holds up to 1000 values per attribute, attribute_counts the
 -- runs (calls) per 'attribute=value', keyed by sipHash64('attribute=value') % 100000 so a row holds at most 100000
 -- counts (values sharing a bucket add up). Session and host attributes stay out, so a row never grows with the number
--- of pods.
+-- of pods, and so do the function's caller, content hash, short name and its flow's type, route and methods: they vary
+-- per call, and function_caller has them (the flow's in its name).
 
 -- The exporter's metric tables, by column name (clickhouseexporter v0.165.0). Summaries and exponential histograms
 -- (none after transform/classic) are accepted and dropped.
@@ -659,8 +660,10 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.function_5m_attributes TO ${D
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
 WITH toUInt32(StartTimeUnix) AS ws, toUInt32(TimeUnix) AS we,
     mapFilter((k, v) -> v != '' AND NOT has(['service.name', 'deployment.environment.name', 'deployment.id', 'code.function.name',
-        'code.file.path', 'code.flow.name', 'service.instance.id', 'k8s.pod.name', 'k8s.pod.uid', 'process.pid', 'host.name',
-        'host.id', 'container.id'], k), mapConcat(Attributes, ResourceAttributes)) AS other
+        'code.file.path', 'code.flow.name', 'code.function.caller.name', 'code.function.caller.file.path',
+        'hud.function.content_hash', 'code.flow.type', 'http.route', 'hud.endpoint.methods', 'hud.function.short_name',
+        'service.instance.id', 'k8s.pod.name', 'k8s.pod.uid', 'process.pid', 'host.name', 'host.id', 'container.id'], k),
+        mapConcat(Attributes, ResourceAttributes)) AS other
 SELECT toStartOfFiveMinutes(if(we > ws AND we - ws <= 3600, StartTimeUnix, TimeUnix)) AS t,
     ResourceAttributes['deployment.environment.name'] AS env, ServiceName AS service,
     Attributes['code.function.name'] AS function, Attributes['code.file.path'] AS file,
