@@ -1,4 +1,4 @@
-# ClickStack export: the merge-mode metrics pipelines of hud-o11y-resources' deploy configs (deploy/helm/values.yaml,
+# ClickStack export: the merge-mode metrics pipelines of hud-opensearch-resources' deploy configs (deploy/helm/values.yaml,
 # deploy/aws/ecs-fargate.yaml; processors copied as is) remote-writing into the metrics TimeSeries table, and logs
 # through the clickhouse exporter into otel_logs, both in HUD_CLICKHOUSE_DATABASE (default hud_otel). hud-migrate
 # creates the database and tables; CLICKHOUSE_USER only needs INSERT on it.
