@@ -18,7 +18,7 @@ Owner: [@ilansh](https://github.com/ilansh). The owner reviews bump PRs and hand
 ## Artifacts
 
 - Image: `ghcr.io/code-hud/hud-otel-collector:<version>` (multi-arch: `linux/amd64`, `linux/arm64`), plus `:latest`.
-  It holds `/hud-otelcol` (the entrypoint) and `/hud-migrate` (see [ClickStack](#clickstack)).
+  It holds `/hud-otelcol` (the entrypoint) and `/hud-migrate` (see [ClickHouse](#clickhouse)).
 - Binaries: `hud-otelcol` and `hud-migrate` for linux, darwin and windows, amd64 and arm64, attached to each
   [GitHub release](../../releases).
 
@@ -57,13 +57,13 @@ Only Docker is required; Go runs in a container.
 make build   # OCB generates and compiles _build/hud-otelcol (linux, Docker host arch)
 make image   # hud-otelcol:dev
 make smoke   # five fake pods send deltas concurrently; expects one merged Prometheus series with the summed total,
-             # then runs hud-migrate and test/clickstack.yaml against ClickHouse and checks the SQL tables and otel_logs
+             # then runs hud-migrate and test/clickhouse.yaml against ClickHouse and checks the SQL tables and otel_logs
              # (database hud_otel_smoke)
 ```
 
-## ClickStack
+## ClickHouse
 
-`test/clickstack.yaml` sends the SDK's metrics through the `clickhouse` exporter into the `ingest_*` tables of
+`test/clickhouse.yaml` sends the SDK's metrics through the `clickhouse` exporter into the `ingest_*` tables of
 `hud_otel`, and logs into `hud_otel.otel_logs`. The `ingest_*` tables are `Null` tables: materialized views sum each insert
 into the tables below (`hud-migrate/schema/0002_sql.sql`) and the raw rows are not kept. The collector keeps no state (no
 pod merging, no `delta_to_cumulative`), so it scales out freely: it only batches the inserts.
@@ -117,7 +117,7 @@ share, so a 1-minute chart shows the SDK's own resolution instead of one minute 
 `Float64` for that; they are whole again over whole intervals.
 The `metrics` `TimeSeries` table of `0001_init.sql` is
 still created but nothing writes to it. `playground/clickstack/` runs it end to end with HyperDX and the node SDK; the
-dashboards are in [hud-clickstack-resources](https://github.com/code-hud/hud-clickstack-resources).
+dashboards are in [hud-clickhouse-resources](https://github.com/code-hud/hud-clickhouse-resources).
 
 The collector's `CLICKHOUSE_ENDPOINT` is the HTTP interface as `scheme://host:port`, e.g.
 `https://<service>.<region>.aws.clickhouse.cloud:8443` on ClickHouse Cloud. `hud-migrate` accepts the same value (an

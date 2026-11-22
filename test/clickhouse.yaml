@@ -1,4 +1,4 @@
-# ClickStack export: the SDK's metrics go through the clickhouse exporter into the ingest_* tables, where materialized
+# ClickHouse export: the SDK's metrics go through the clickhouse exporter into the ingest_* tables, where materialized
 # views sum the deltas into the flow, session, issue, function and site tables (hud-migrate/schema/0002_sql.sql), and
 # logs go into otel_logs, all in HUD_CLICKHOUSE_DATABASE (default hud_otel). hud-migrate creates the database and
 # tables; CLICKHOUSE_USER only needs INSERT on it.
