@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Five fake pods (three on deployment v1, two on v2) send deltas concurrently. Function metrics must merge
 # into one Prometheus series per deployment holding its sum; flow and process metrics must stay one series per pod.
-# Then the ClickStack path: hud-migrate creates the schema, and deltas (with a calling flow and an issue), an exponential
-# histogram, a gauge and a log sent through test/clickstack.yaml must come out of the SQL tables and otel_logs exactly.
+# Then the ClickHouse path: hud-migrate creates the schema, and deltas (with a calling flow and an issue), an exponential
+# histogram, a gauge and a log sent through test/clickhouse.yaml must come out of the SQL tables and otel_logs exactly.
 set -euo pipefail
 
 IMAGE=${IMAGE:-hud-otelcol:dev}
@@ -28,11 +28,11 @@ for c in otlp batch filter transform delta_to_cumulative interval prometheus_rem
   grep -q "name: $c\$" <<<"$components" || { echo "missing component: $c"; exit 1; }
 done
 
-echo "--- validate AMP and ClickStack configs"
+echo "--- validate AMP and ClickHouse configs"
 docker run --rm -v "$DIR:/cfg:ro" -e AWS_ACCESS_KEY_ID=dummy -e AWS_SECRET_ACCESS_KEY=dummy \
   "$IMAGE" validate --config /cfg/amp.yaml
 docker run --rm -v "$DIR:/cfg:ro" -e CLICKHOUSE_ENDPOINT=http://localhost:8123 -e CLICKHOUSE_USER=u -e CLICKHOUSE_PASSWORD=p \
-  "$IMAGE" validate --config /cfg/clickstack.yaml
+  "$IMAGE" validate --config /cfg/clickhouse.yaml
 
 echo "--- start Prometheus and collector"
 docker network create $NET >/dev/null
@@ -103,7 +103,7 @@ poll query smoke-collector "${checks[@]}"
 
 # A non-default database name, so the setup script, hud-migrate and the collector config all have to follow it
 DB=hud_otel_smoke
-echo "--- ClickStack: ClickHouse with the playground's setup script, database $DB"
+echo "--- ClickHouse: the server with the playground's setup script, database $DB"
 SETUP=(-v "$PLAYGROUND/setup.sh:/docker-entrypoint-initdb.d/setup.sh:ro" -v "$PLAYGROUND/setup.sql:/hud/setup.sql:ro")
 out=$(docker run --rm "${SETUP[@]}" -e "HUD_CLICKHOUSE_DATABASE=x; DROP USER y" \
   --entrypoint /docker-entrypoint-initdb.d/setup.sh "$CLICKHOUSE_IMAGE" 2>&1 || true)
@@ -147,10 +147,10 @@ done
 docker run --rm --network $NET "${MIGRATOR[@]}" -v "$DIR/../hud-migrate:/src" -w /src \
   -v hud-otelcol-gomod:/go/pkg/mod -v hud-otelcol-gocache:/root/.cache/go-build "$GO_IMAGE" go test -count=1 ./...
 
-echo "--- ClickStack collector: two deltas of a counter and of a scale-2 exponential histogram per flow and function (scale 3 for queue latency), a gauge, one log, 3-minute deltas spread over their buckets"
+echo "--- ClickHouse collector: two deltas of a counter and of a scale-2 exponential histogram per flow and function (scale 3 for queue latency), a gauge, one log, 3-minute deltas spread over their buckets"
 docker run -d --name smoke-clickstack --network $NET -p 14319:4318 -v "$DIR:/cfg:ro" \
   -e CLICKHOUSE_ENDPOINT=http://smoke-clickhouse:8123 -e CLICKHOUSE_USER=hud_collector -e CLICKHOUSE_PASSWORD=Collector-pass-1234 \
-  -e HUD_CLICKHOUSE_DATABASE=$DB "$IMAGE" --config /cfg/clickstack.yaml >/dev/null
+  -e HUD_CLICKHOUSE_DATABASE=$DB "$IMAGE" --config /cfg/clickhouse.yaml >/dev/null
 for _ in $(seq 30); do curl -s -o /dev/null localhost:14319 && break; sleep 1; done
 
 # Buckets (2^(k/4), 2^((k+1)/4)] s for k = -14..-12 hold 1, 2 and 2 per delta, so the median of both deltas (the 5th of
@@ -242,7 +242,7 @@ docker run --rm --network $NET -e CLICKHOUSE_ENDPOINT=https://smoke-clickhouse:8
   -e CLICKHOUSE_PASSWORD=Migrator-pass-1234 "${TLS[@]}" --entrypoint /hud-migrate "$IMAGE" up
 docker run -d --name smoke-clickstack-tls --network $NET -p 14320:4318 -v "$DIR:/cfg:ro" "${TLS[@]}" \
   -e CLICKHOUSE_ENDPOINT=https://smoke-clickhouse:8443 -e CLICKHOUSE_USER=hud_collector -e CLICKHOUSE_PASSWORD=Collector-pass-1234 \
-  "$IMAGE" --config /cfg/clickstack.yaml >/dev/null
+  "$IMAGE" --config /cfg/clickhouse.yaml >/dev/null
 for _ in $(seq 30); do curl -s -o /dev/null localhost:14320 && break; sleep 1; done
 TLS_RESOURCE='{"attributes":[{"key":"service.name","value":{"stringValue":"smoke-tls"}},{"key":"service.instance.id","value":{"stringValue":"pod-tls"}}]}'
 curl -sf -X POST localhost:14320/v1/metrics -H 'Content-Type: application/json' -d @- >/dev/null <<EOF

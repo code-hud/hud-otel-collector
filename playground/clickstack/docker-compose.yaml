@@ -35,7 +35,7 @@ services:
 
   collector:
     image: ${COLLECTOR_IMAGE:-hud-otelcol:dev}
-    command: ["--config", "/cfg/clickstack.yaml"]
+    command: ["--config", "/cfg/clickhouse.yaml"]
     volumes:
       - ../../test:/cfg:ro
     environment:

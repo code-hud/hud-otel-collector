@@ -1,7 +1,7 @@
 # ClickStack playground
 
 ClickHouse with the customer setup script (`setup.sql`, run by `setup.sh`), `hud-migrate` as an init container, the
-collector on `test/clickstack.yaml`, HyperDX, and the node SDK's sample app against its fake Hud backend.
+collector on `test/clickhouse.yaml`, HyperDX, and the node SDK's sample app against its fake Hud backend.
 
 ## Run
 
@@ -40,7 +40,7 @@ curl -s -u hud_backend:Backend-pass-1234 localhost:8123 \
 HyperDX: open http://localhost:8080 and create an account (the first one provisions the `Hud ClickHouse` connection,
 as `hud_backend`, and the sources `Hud investigations` (log, `hud_otel.otel_logs`) and `Hud labels` (log,
 `hud_otel.labels`, what the dashboards' selectors read)). Search the investigations; for metrics import the Hud
-dashboards ([hud-clickstack-resources](https://github.com/code-hud/hud-clickstack-resources)) with a personal API key
+dashboards ([hud-clickhouse-resources](https://github.com/code-hud/hud-clickhouse-resources)) with a personal API key
 from Team Settings, or add a SQL tile with a query like the one above.
 
 The database is `hud_otel` unless you set `HUD_CLICKHOUSE_DATABASE` (a plain identifier) for `docker compose up`;
