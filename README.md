@@ -62,10 +62,15 @@ make smoke   # five fake pods send deltas concurrently; expects one merged Prome
 
 ## ClickStack
 
-`test/clickstack.yaml` is the AMP pipeline writing to ClickHouse: metrics are remote-written into `hud_otel.metrics`,
-a `TimeSeries` table queried with PromQL, and logs go through the `clickhouse` exporter into `hud_otel.otel_logs`. The SDK's
-exponential histograms are converted to classic buckets first, because ClickHouse drops native histograms.
-`playground/clickstack/` runs it end to end with HyperDX and the node SDK.
+`test/clickstack.yaml` is the AMP merge-mode pipeline (the `metrics/functions` and `metrics/per_pod` pipelines of
+hud-o11y-resources' deploy configs, processors copied as is) writing to ClickHouse: metrics are remote-written into
+`hud_otel.metrics`, a `TimeSeries` table queried with PromQL, and logs go through the `clickhouse` exporter into
+`hud_otel.otel_logs`. Two differences from the deploy configs: the SDK's exponential histograms are converted to classic
+buckets before `delta_to_cumulative`, because ClickHouse drops native histograms (so PromQL uses `_bucket`/`_count`, not
+`histogram_count()`), and the exporter turns every resource attribute but `service.instance.id` into a label
+(`resource_constant_labels`), which gives the label sets of Hud's AMP data minus `service_instance_id`, a copy of
+`instance`. `playground/clickstack/` runs it end to end
+with HyperDX and the node SDK.
 
 The collector's `CLICKHOUSE_ENDPOINT` is the HTTP interface as `scheme://host:port`, e.g.
 `https://<service>.<region>.aws.clickhouse.cloud:8443` on ClickHouse Cloud, with no path, query string or trailing
