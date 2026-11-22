@@ -63,7 +63,7 @@ make smoke   # five fake pods send deltas concurrently; expects one merged Prome
 ## ClickStack
 
 `test/clickstack.yaml` is the AMP merge-mode pipeline (the `metrics/functions` and `metrics/per_pod` pipelines of
-hud-o11y-resources' deploy configs, processors copied as is) writing to ClickHouse: metrics are remote-written into
+hud-opensearch-resources' deploy configs, processors copied as is) writing to ClickHouse: metrics are remote-written into
 `hud_otel.metrics`, a `TimeSeries` table queried with PromQL, and logs go through the `clickhouse` exporter into
 `hud_otel.otel_logs`. Two differences from the deploy configs: the SDK's exponential histograms are converted to classic
 buckets before `delta_to_cumulative`, because ClickHouse drops native histograms (so PromQL uses `_bucket`/`_count`, not
