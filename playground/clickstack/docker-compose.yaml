@@ -74,8 +74,12 @@ services:
         "eventAttributesExpression":"LogAttributes","resourceAttributesExpression":"ResourceAttributes",
         "traceIdExpression":"TraceId","spanIdExpression":"SpanId",
         "defaultTableSelectExpression":"Timestamp,ServiceName,EventName,SeverityText,Body"},
-        {"kind":"log","name":"Hud labels","connection":"Hud ClickHouse",
-        "from":{"databaseName":"${HUD_CLICKHOUSE_DATABASE:-hud_otel}","tableName":"labels"},
+        {"kind":"log","name":"Hud endpoints","connection":"Hud ClickHouse",
+        "from":{"databaseName":"${HUD_CLICKHOUSE_DATABASE:-hud_otel}","tableName":"endpoints"},
+        "timestampValueExpression":"now64(3) - INTERVAL 1 MINUTE","defaultTableSelectExpression":"env, service, flow",
+        "bodyExpression":"flow","implicitColumnExpression":"flow"},
+        {"kind":"log","name":"Hud functions","connection":"Hud ClickHouse",
+        "from":{"databaseName":"${HUD_CLICKHOUSE_DATABASE:-hud_otel}","tableName":"functions"},
         "timestampValueExpression":"now64(3) - INTERVAL 1 MINUTE","defaultTableSelectExpression":"env, service, flow, function",
         "bodyExpression":"function","implicitColumnExpression":"function"}]
     depends_on: [mongo, clickhouse]

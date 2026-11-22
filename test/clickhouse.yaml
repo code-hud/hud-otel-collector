@@ -1,6 +1,6 @@
-# ClickHouse export: the SDK's metrics go through the clickhouse exporter into the ingest_* tables, where materialized
-# views sum the deltas into the flow, session, issue, function and site tables (hud-migrate/schema/0002_sql.sql), and
-# logs go into otel_logs, all in HUD_CLICKHOUSE_DATABASE (default hud_otel). hud-migrate creates the database and
+# ClickHouse export: the SDK's metrics go through the clickhouse exporter into its default otel_metrics_* tables, where
+# materialized views sum the deltas into the endpoint, machine and function tables (hud-migrate/schema/0002_sql.sql),
+# and logs go into otel_logs, all in HUD_CLICKHOUSE_DATABASE (default hud_otel). hud-migrate creates the database and
 # tables; CLICKHOUSE_USER only needs INSERT on it.
 # The collector keeps no state: pods are not merged here, every replica inserts the deltas it receives and ClickHouse
 # sums them, so replicas can scale freely.
@@ -36,12 +36,11 @@ exporters:
     database: ${env:HUD_CLICKHOUSE_DATABASE:-hud_otel}
     create_schema: false
     logs_table_name: otel_logs
-    metrics_tables:
-      gauge: {name: ingest_gauge}
-      sum: {name: ingest_sum}
-      summary: {name: ingest_summary}
-      histogram: {name: ingest_histogram}
-      exponential_histogram: {name: ingest_exponential_histogram}
+    # A retried batch must be dropped as a duplicate by every table and view (hud-migrate/schema/0002_sql.sql): plain
+    # inserts, since async ones (the exporter's default) are not deduplicated, and dedup through the views.
+    async_insert: false
+    connection_params:
+      deduplicate_blocks_in_dependent_materialized_views: "1"
     tls:
       insecure_skip_verify: ${env:CLICKHOUSE_TLS_INSECURE_SKIP_VERIFY:-false}
 

@@ -23,7 +23,7 @@ GRANT hud_write TO hud_collector; GRANT hud_ddl TO hud_migrator; GRANT hud_read 
 
 -- The runs (calls) of 'attribute=value' in an attribute_counts map (one row's, or sumMap(attribute_counts) over many),
 -- 0 when absent. Functions are server-wide and CREATE FUNCTION is a global grant, so the admin creates it, not
--- hud-migrate. The key must match the attribute_counts views in hud-migrate/schema/0002_sql.sql.
+-- hud-migrate. The key must match attribute_counts in the duration views of hud-migrate/schema/0002_sql.sql.
 CREATE FUNCTION IF NOT EXISTS hud_attribute_count AS (attribute, value, counts) ->
   counts[sipHash64(concat(attribute, '=', value)) % 100000];
 

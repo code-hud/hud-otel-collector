@@ -21,13 +21,13 @@ investigations appear as the SDK sends them (first error, baselines).
 ## Look
 
 Metrics, as `hud_backend` (the read-only user Hud's backend gets): runs, P90 and errors per flow over the last hour,
-from the 1-minute flow table:
+from the endpoint table:
 
 ```sh
 curl -s -u hud_backend:Backend-pass-1234 localhost:8123 --data-binary "
   SELECT flow, sum(duration_count) AS runs, sumIf(duration_count, startsWith(status_code, '5')) AS errors_5xx,
     round(1e3 * hud_duration_quantile(0.9, sumMap(buckets)), 1) AS p90_ms
-  FROM hud_otel.flow WHERE t >= now() - INTERVAL 1 HOUR GROUP BY flow FORMAT PrettyCompact"
+  FROM hud_otel.endpoint_metrics WHERE t >= now() - INTERVAL 1 HOUR GROUP BY flow FORMAT PrettyCompact"
 ```
 
 Logs:
@@ -38,8 +38,8 @@ curl -s -u hud_backend:Backend-pass-1234 localhost:8123 \
 ```
 
 HyperDX: open http://localhost:8080 and create an account (the first one provisions the `Hud ClickHouse` connection,
-as `hud_backend`, and the sources `Hud investigations` (log, `hud_otel.otel_logs`) and `Hud labels` (log,
-`hud_otel.labels`, what the dashboards' selectors read)). Search the investigations; for metrics import the Hud
+as `hud_backend`, and the sources `Hud investigations` (log, `hud_otel.otel_logs`), `Hud endpoints` and
+`Hud functions` (log, `hud_otel.endpoints` and `hud_otel.functions`, what the dashboards' selectors read)). Search the investigations; for metrics import the Hud
 dashboards ([hud-clickhouse-resources](https://github.com/code-hud/hud-clickhouse-resources)) with a personal API key
 from Team Settings, or add a SQL tile with a query like the one above.
 
