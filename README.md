@@ -66,8 +66,7 @@ make smoke   # five fake pods send deltas concurrently; expects one merged Prome
 `test/clickstack.yaml` sends the SDK's metrics through the `clickhouse` exporter into the `ingest_*` tables of
 `hud_otel`, and logs into `hud_otel.otel_logs`. The `ingest_*` tables are `Null` tables: materialized views sum each insert
 into the tables below (`hud-migrate/schema/0002_sql.sql`) and the raw rows are not kept. The collector keeps no state (no
-pod merging, no `delta_to_cumulative`), so it scales out freely: it converts the SDK's exponential histograms to classic
-buckets and batches the inserts.
+pod merging, no `delta_to_cumulative`), so it scales out freely: it only batches the inserts.
 
 | Tables | Grain | One row per (and what it sums) |
 | --- | --- | --- |
@@ -81,7 +80,7 @@ buckets and batches the inserts.
 | `labels` | | every environment, service, flow and function seen (the dashboards' selectors) |
 
 Each fine table rolls up into its hourly table. Fine tables are plain `MergeTree` of plain values (every insert's rows
-kept as written, one per key, pod and view): sum them with `sum`, `sumForEach(buckets)` and
+kept as written, one per key, pod and view): sum them with `sum`, `sumMap(buckets)` and
 `groupUniqArrayArrayMap(1000)(attributes)`. They keep 30 days, fixed because the dashboards read them up to 30 days back
 and the hourly tables beyond. Hourly tables are
 `AggregatingMergeTree` of aggregate states and keep everything: read them with `-Merge`, or `finalizeAggregation()` a
@@ -108,8 +107,10 @@ ORDER BY attribute, runs DESC
 ```
 
 Every row has the environment (`deployment.environment.name`) and the service (`service.name`).
-Durations are counts per bucket of the `transform/classic` grid: `buckets[k]` counts durations up to
-`duration_bounds[k]` seconds and `buckets[34]` the rest, so any grain answers percentiles. Only deltas are summed (the
+Durations are the SDK's base2 exponential histograms at scale 2: `buckets[k]` counts durations in
+(2^(k/4), 2^((k+1)/4)] seconds and leaves out the empty buckets, so any grain answers percentiles, from nanoseconds to
+hours at about ±9%. `hud_duration_quantile(q, sumMap(buckets))` (created by the admin's `setup.sql`) reads one, in
+seconds. Only deltas are summed (the
 SDK sends nothing else), except the process gauges and limits. A delta covers the SDK's export interval
 (`aggregationInterval`: 5 minutes by default, set per account) and is spread over the fine buckets it overlaps by
 share, so a 1-minute chart shows the SDK's own resolution instead of one minute holding the whole interval. Counts are

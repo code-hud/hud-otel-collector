@@ -21,12 +21,12 @@ investigations appear as the SDK sends them (first error, baselines).
 ## Look
 
 Metrics, as `hud_backend` (the read-only user Hud's backend gets): runs, P90 and errors per flow over the last hour,
-from the 1-minute flow table (`buckets[k]` counts durations up to `duration_bounds[k]` seconds, `buckets[34]` the rest):
+from the 1-minute flow table:
 
 ```sh
 curl -s -u hud_backend:Backend-pass-1234 localhost:8123 --data-binary "
   SELECT flow, sum(duration_count) AS runs, sumIf(duration_count, startsWith(status_code, '5')) AS errors_5xx,
-    arrayFirstIndex(c -> c >= 0.9 * runs, arrayCumSum(sumForEach(buckets))) AS p90_bucket
+    round(1e3 * hud_duration_quantile(0.9, sumMap(buckets)), 1) AS p90_ms
   FROM hud_otel.flow WHERE t >= now() - INTERVAL 1 HOUR GROUP BY flow FORMAT PrettyCompact"
 ```
 

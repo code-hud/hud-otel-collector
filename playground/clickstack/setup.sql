@@ -26,3 +26,11 @@ GRANT hud_write TO hud_collector; GRANT hud_ddl TO hud_migrator; GRANT hud_read 
 -- hud-migrate. The key must match the attribute_counts views in hud-migrate/schema/0002_sql.sql.
 CREATE FUNCTION IF NOT EXISTS hud_attribute_count AS (attribute, value, counts) ->
   counts[sipHash64(concat(attribute, '=', value)) % 100000];
+
+-- The q quantile (0 to 1) in seconds of a duration buckets map (one row's, or sumMap(buckets) over many): k ->
+-- count of (2^(k/4), 2^((k+1)/4)] s, keys ascending. Interpolated within its bucket on the log scale, nan when empty.
+CREATE FUNCTION IF NOT EXISTS hud_duration_quantile AS (q, buckets) -> if(empty(buckets), nan,
+  arrayFirst((v, c) -> c >= q * arrayCumSum(mapValues(buckets))[-1],
+    arrayMap((k, n, c) -> exp2((k + 1 - (c - q * arrayCumSum(mapValues(buckets))[-1]) / n) / 4),
+      mapKeys(buckets), mapValues(buckets), arrayCumSum(mapValues(buckets))),
+    arrayCumSum(mapValues(buckets))));

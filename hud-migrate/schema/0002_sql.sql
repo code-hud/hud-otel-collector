@@ -4,16 +4,19 @@
 
 -- SQL metrics: the collector's clickhouse exporter inserts the SDK's OTLP metrics into the ingest_* tables. They are
 -- Null tables: materialized views aggregate each insert into the tables below and the raw rows are not kept.
--- Every series is a delta (AggregationTemporality = 1) except the process gauges and limits. The SDK's exponential
--- histograms arrive as classic buckets on the transform/classic grid (duration_bounds). A delta covers its export
--- interval [StartTimeUnix, TimeUnix) (aggregationInterval: 5 minutes by default, set per account), so it is spread
+-- Every series is a delta (AggregationTemporality = 1) except the process gauges and limits. Durations are the SDK's
+-- base2 exponential histograms: buckets maps the scale-2 bucket index k, (2^(k/4), 2^((k+1)/4)] seconds, to its count,
+-- without the empty ones; hud_duration_quantile(q, sumMap(buckets)) (the admin's setup.sql) reads a percentile. A point
+-- at another scale goes onto scale 2 (exactly from a finer one, from a coarser one each bucket into its top scale-2
+-- bucket). Zero and negative counts (none from the SDK) are dropped. A delta covers its export interval
+-- [StartTimeUnix, TimeUnix) (aggregationInterval: 5 minutes by default, set per account), so it is spread
 -- over the fine buckets that interval overlaps, each getting its share of the interval: a chart then shows the SDK's
 -- own resolution whatever the interval (every bucket of an interval has its rate and its duration distribution),
 -- instead of one bucket holding it all and the others none. Counts are therefore Float64; they add up to whole
 -- numbers again over whole intervals. An interval that is empty or longer than an hour goes to the bucket of TimeUnix.
 --
 -- The fine tables (below, at 1 or 5 minutes) are plain MergeTree holding plain values: every insert's rows stay as
--- written (one per key, pod and view, nothing merged), so queries sum them (sum, sumForEach(buckets),
+-- written (one per key, pod and view, nothing merged), so queries sum them (sum, sumMap(buckets),
 -- groupUniqArrayArrayMap(1000)(attributes)). They keep 30 days: the dashboards read them up to 30 days back and the
 -- hourly tables beyond. Each fine table's insert rolls up into <name>_hourly, an AggregatingMergeTree of aggregate states
 -- that keeps everything: read it with -Merge, or finalizeAggregation() a column to union it with the fine table's.
@@ -37,8 +40,8 @@
 -- of pods, and so do the function's caller, content hash, short name and its flow's type, route and methods: they vary
 -- per call, and function_metrics has them (the flow's in its name).
 
--- The exporter's metric tables, by column name (clickhouseexporter v0.165.0). Summaries and exponential histograms
--- (none after transform/classic) are accepted and dropped.
+-- The exporter's metric tables, by column name (clickhouseexporter v0.165.0). Summaries and classic histograms are
+-- accepted and dropped.
 CREATE TABLE IF NOT EXISTS ${DATABASE}.ingest_sum
 (
     ResourceAttributes Map(LowCardinality(String), String), ResourceSchemaUrl String, ScopeName String, ScopeVersion String,
@@ -99,15 +102,6 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.ingest_summary
 )
 ENGINE = Null;
 
--- The upper bounds of buckets[1..33] (seconds), buckets[34] is +Inf. Same list as transform/classic.
-CREATE VIEW IF NOT EXISTS ${DATABASE}.duration_bounds AS
-SELECT [0.0009765634765625, 0.0013810693130729076, 0.001953126953125, 0.0027621386261458152, 0.00390625390625,
-    0.0055242772522916305, 0.0078125078125, 0.011048554504583261, 0.015625015625, 0.022097109009166522, 0.03125003125,
-    0.044194218018333044, 0.0625000625, 0.08838843603666609, 0.125000125, 0.17677687207333218, 0.25000025,
-    0.35355374414666435, 0.5000005, 0.7071074882933287, 1.000001, 1.4142149765866574, 2.000002, 2.828429953173315,
-    4.000004, 5.65685990634663, 8.000008, 11.31371981269326, 16.000016, 22.62743962538652, 32.000032, 45.25487925077304,
-    64.000064] AS bounds;
-
 -- duration_count is the number of runs, e2e_* is the queue latency from publish to the end of the flow.
 CREATE TABLE IF NOT EXISTS ${DATABASE}.flow
 (
@@ -115,9 +109,9 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.flow
     method LowCardinality(String), route String, status_code LowCardinality(String), end_reason LowCardinality(String),
     destination String, deployment String,
     duration_count Float64, duration_sum Float64,
-    buckets Array(Float64),
+    buckets Map(Int16, Float64),
     e2e_count Float64, e2e_sum Float64,
-    e2e_buckets Array(Float64),
+    e2e_buckets Map(Int16, Float64),
     messages Float64, last_seen DateTime,
     attributes Map(String, Array(String)),
     attribute_counts Map(UInt32, UInt64)
@@ -134,9 +128,9 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.flow_hourly
     method LowCardinality(String), route String, status_code LowCardinality(String), end_reason LowCardinality(String),
     destination String, deployment String,
     duration_count SimpleAggregateFunction(sum, Float64), duration_sum SimpleAggregateFunction(sum, Float64),
-    buckets AggregateFunction(sumForEach, Array(Float64)),
+    buckets SimpleAggregateFunction(sumMap, Map(Int16, Float64)),
     e2e_count SimpleAggregateFunction(sum, Float64), e2e_sum SimpleAggregateFunction(sum, Float64),
-    e2e_buckets AggregateFunction(sumForEach, Array(Float64)),
+    e2e_buckets SimpleAggregateFunction(sumMap, Map(Int16, Float64)),
     messages SimpleAggregateFunction(sum, Float64), last_seen SimpleAggregateFunction(max, DateTime),
     attributes AggregateFunction(groupUniqArrayArrayMap(1000), Map(String, Array(String))),
     attribute_counts SimpleAggregateFunction(sumMap, Map(UInt32, UInt64))
@@ -266,7 +260,7 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.function
     t DateTime, env LowCardinality(String), service LowCardinality(String), function String, file String, deployment String,
     calls Float64, errors Float64,
     duration_sum Float64, duration_count Float64,
-    buckets Array(Float64),
+    buckets Map(Int16, Float64),
     attributes Map(String, Array(String)),
     attribute_counts Map(UInt32, UInt64)
 )
@@ -281,7 +275,7 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.function_hourly
     hour DateTime, env LowCardinality(String), service LowCardinality(String), function String, file String, deployment String,
     calls SimpleAggregateFunction(sum, Float64), errors SimpleAggregateFunction(sum, Float64),
     duration_sum SimpleAggregateFunction(sum, Float64), duration_count SimpleAggregateFunction(sum, Float64),
-    buckets AggregateFunction(sumForEach, Array(Float64)),
+    buckets SimpleAggregateFunction(sumMap, Map(Int16, Float64)),
     attributes AggregateFunction(groupUniqArrayArrayMap(1000), Map(String, Array(String))),
     attribute_counts SimpleAggregateFunction(sumMap, Map(UInt32, UInt64))
 )
@@ -298,7 +292,7 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.function_metrics
     caller_file String, flow String, content_hash String, error_type String, deployment String,
     calls Float64, errors Float64,
     duration_sum Float64, duration_count Float64,
-    buckets Array(Float64)
+    buckets Map(Int16, Float64)
 )
 ENGINE = MergeTree
 PARTITION BY toDate(t)
@@ -312,7 +306,7 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.function_metrics_hourly
     caller_file String, flow String, content_hash String, error_type String, deployment String,
     calls SimpleAggregateFunction(sum, Float64), errors SimpleAggregateFunction(sum, Float64),
     duration_sum SimpleAggregateFunction(sum, Float64), duration_count SimpleAggregateFunction(sum, Float64),
-    buckets AggregateFunction(sumForEach, Array(Float64))
+    buckets SimpleAggregateFunction(sumMap, Map(Int16, Float64))
 )
 ENGINE = AggregatingMergeTree
 PARTITION BY toYYYYMM(hour)
@@ -330,11 +324,12 @@ ORDER BY (env, service, flow, function)
 SETTINGS non_replicated_deduplication_window = 10000;
 
 -- Fine tables, from the ingest tables. Each delta row joins its buckets p = (bucket start, the share of the interval
--- in that bucket).
+-- in that bucket). bucket_keys are a histogram point's bucket indexes on scale 2.
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.flow_duration TO ${DATABASE}.flow
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
-WITH toUInt32(StartTimeUnix) AS ws, toUInt32(TimeUnix) AS we
+WITH toUInt32(StartTimeUnix) AS ws, toUInt32(TimeUnix) AS we,
+    arrayMap(i -> toInt16(ceil((PositiveOffset + i) * exp2(2 - Scale)) - 1), arrayEnumerate(PositiveBucketCounts)) AS bucket_keys
 SELECT p.1 AS t,
     ResourceAttributes['deployment.environment.name'] AS env, ServiceName AS service, Attributes['code.flow.name'] AS flow,
     Attributes['code.flow.type'] AS flow_type, Attributes['http.request.method'] AS method, Attributes['http.route'] AS route,
@@ -342,10 +337,10 @@ SELECT p.1 AS t,
     if(Attributes['messaging.destination.name'] != '', Attributes['messaging.destination.name'],
         Attributes['messaging.destination.template']) AS destination, ResourceAttributes['deployment.id'] AS deployment,
     sum(Count * p.2) AS duration_count, sum(Sum * p.2) AS duration_sum,
-    sumForEach(arrayMap(c -> c * p.2, BucketCounts)) AS buckets,
-    0 AS e2e_count, 0 AS e2e_sum, CAST([], 'Array(Float64)') AS e2e_buckets, 0 AS messages,
+    sumMap(mapFilter((k, n) -> n != 0, mapFromArrays(bucket_keys, arrayMap(c -> c * p.2, PositiveBucketCounts)))) AS buckets,
+    0 AS e2e_count, 0 AS e2e_sum, CAST(map(), 'Map(Int16, Float64)') AS e2e_buckets, 0 AS messages,
     max(TimeUnix) AS last_seen
-FROM ${DATABASE}.ingest_histogram
+FROM ${DATABASE}.ingest_exponential_histogram
 ARRAY JOIN if(we > ws AND we - ws <= 3600,
     arrayMap(b -> (toDateTime(b), (least(b + 60, we) - greatest(b, ws)) / (we - ws)),
         range(intDiv(ws, 60) * 60, we, 60)),
@@ -355,17 +350,18 @@ GROUP BY t, env, service, flow, flow_type, method, route, status_code, end_reaso
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.flow_e2e TO ${DATABASE}.flow
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
-WITH toUInt32(StartTimeUnix) AS ws, toUInt32(TimeUnix) AS we
+WITH toUInt32(StartTimeUnix) AS ws, toUInt32(TimeUnix) AS we,
+    arrayMap(i -> toInt16(ceil((PositiveOffset + i) * exp2(2 - Scale)) - 1), arrayEnumerate(PositiveBucketCounts)) AS bucket_keys
 SELECT p.1 AS t,
     ResourceAttributes['deployment.environment.name'] AS env, ServiceName AS service, Attributes['code.flow.name'] AS flow,
     Attributes['code.flow.type'] AS flow_type, '' AS method, '' AS route, '' AS status_code, '' AS end_reason,
     if(Attributes['messaging.destination.name'] != '', Attributes['messaging.destination.name'],
         Attributes['messaging.destination.template']) AS destination, ResourceAttributes['deployment.id'] AS deployment,
-    0 AS duration_count, 0 AS duration_sum, CAST([], 'Array(Float64)') AS buckets,
+    0 AS duration_count, 0 AS duration_sum, CAST(map(), 'Map(Int16, Float64)') AS buckets,
     sum(Count * p.2) AS e2e_count, sum(Sum * p.2) AS e2e_sum,
-    sumForEach(arrayMap(c -> c * p.2, BucketCounts)) AS e2e_buckets, 0 AS messages,
-    max(TimeUnix) AS last_seen
-FROM ${DATABASE}.ingest_histogram
+    sumMap(mapFilter((k, n) -> n != 0, mapFromArrays(bucket_keys, arrayMap(c -> c * p.2, PositiveBucketCounts)))) AS e2e_buckets,
+    0 AS messages, max(TimeUnix) AS last_seen
+FROM ${DATABASE}.ingest_exponential_histogram
 ARRAY JOIN if(we > ws AND we - ws <= 3600,
     arrayMap(b -> (toDateTime(b), (least(b + 60, we) - greatest(b, ws)) / (we - ws)),
         range(intDiv(ws, 60) * 60, we, 60)),
@@ -381,8 +377,8 @@ SELECT p.1 AS t,
     Attributes['code.flow.type'] AS flow_type, '' AS method, '' AS route, '' AS status_code, '' AS end_reason,
     if(Attributes['messaging.destination.name'] != '', Attributes['messaging.destination.name'],
         Attributes['messaging.destination.template']) AS destination, ResourceAttributes['deployment.id'] AS deployment,
-    0 AS duration_count, 0 AS duration_sum, CAST([], 'Array(Float64)') AS buckets,
-    0 AS e2e_count, 0 AS e2e_sum, CAST([], 'Array(Float64)') AS e2e_buckets, sum(Value * p.2) AS messages,
+    0 AS duration_count, 0 AS duration_sum, CAST(map(), 'Map(Int16, Float64)') AS buckets,
+    0 AS e2e_count, 0 AS e2e_sum, CAST(map(), 'Map(Int16, Float64)') AS e2e_buckets, sum(Value * p.2) AS messages,
     max(TimeUnix) AS last_seen
 FROM ${DATABASE}.ingest_sum
 ARRAY JOIN if(we > ws AND we - ws <= 3600,
@@ -432,7 +428,7 @@ SELECT p.1 AS t,
     sum(Count * p.2) AS runs,
     sumIf(Count * p.2, startsWith(Attributes['http.response.status_code'], '5')) AS errors, 0 AS issues,
     max(TimeUnix) AS last_seen
-FROM ${DATABASE}.ingest_histogram
+FROM ${DATABASE}.ingest_exponential_histogram
 ARRAY JOIN if(we > ws AND we - ws <= 3600,
     arrayMap(b -> (toDateTime(b), (least(b + 60, we) - greatest(b, ws)) / (we - ws)),
         range(intDiv(ws, 60) * 60, we, 60)),
@@ -492,14 +488,15 @@ GROUP BY t, env, service, flow, flow_type, status_code, parent_service, parent_f
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.function_duration TO ${DATABASE}.function
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
-WITH toUInt32(StartTimeUnix) AS ws, toUInt32(TimeUnix) AS we
+WITH toUInt32(StartTimeUnix) AS ws, toUInt32(TimeUnix) AS we,
+    arrayMap(i -> toInt16(ceil((PositiveOffset + i) * exp2(2 - Scale)) - 1), arrayEnumerate(PositiveBucketCounts)) AS bucket_keys
 SELECT p.1 AS t,
     ResourceAttributes['deployment.environment.name'] AS env, ServiceName AS service,
     Attributes['code.function.name'] AS function, Attributes['code.file.path'] AS file,
     ResourceAttributes['deployment.id'] AS deployment,
     0 AS calls, 0 AS errors, sum(Sum * p.2) AS duration_sum, sum(Count * p.2) AS duration_count,
-    sumForEach(arrayMap(c -> c * p.2, BucketCounts)) AS buckets
-FROM ${DATABASE}.ingest_histogram
+    sumMap(mapFilter((k, n) -> n != 0, mapFromArrays(bucket_keys, arrayMap(c -> c * p.2, PositiveBucketCounts)))) AS buckets
+FROM ${DATABASE}.ingest_exponential_histogram
 ARRAY JOIN if(we > ws AND we - ws <= 3600,
     arrayMap(b -> (toDateTime(b), (least(b + 300, we) - greatest(b, ws)) / (we - ws)),
         range(intDiv(ws, 300) * 300, we, 300)),
@@ -516,7 +513,7 @@ SELECT p.1 AS t,
     ResourceAttributes['deployment.id'] AS deployment,
     sumIf(Value * p.2, MetricName = 'code.function.calls') AS calls,
     sumIf(Value * p.2, MetricName = 'code.function.errors') AS errors,
-    0 AS duration_sum, 0 AS duration_count, CAST([], 'Array(Float64)') AS buckets
+    0 AS duration_sum, 0 AS duration_count, CAST(map(), 'Map(Int16, Float64)') AS buckets
 FROM ${DATABASE}.ingest_sum
 ARRAY JOIN if(we > ws AND we - ws <= 3600,
     arrayMap(b -> (toDateTime(b), (least(b + 300, we) - greatest(b, ws)) / (we - ws)),
@@ -527,7 +524,8 @@ GROUP BY t, env, service, function, file, deployment;
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.function_metrics_duration TO ${DATABASE}.function_metrics
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
-WITH toUInt32(StartTimeUnix) AS ws, toUInt32(TimeUnix) AS we
+WITH toUInt32(StartTimeUnix) AS ws, toUInt32(TimeUnix) AS we,
+    arrayMap(i -> toInt16(ceil((PositiveOffset + i) * exp2(2 - Scale)) - 1), arrayEnumerate(PositiveBucketCounts)) AS bucket_keys
 SELECT p.1 AS t,
     ResourceAttributes['deployment.environment.name'] AS env, ServiceName AS service,
     Attributes['code.function.name'] AS function, Attributes['code.file.path'] AS file,
@@ -535,8 +533,8 @@ SELECT p.1 AS t,
     Attributes['code.flow.name'] AS flow,
     Attributes['hud.function.content_hash'] AS content_hash, '' AS error_type, ResourceAttributes['deployment.id'] AS deployment,
     0 AS calls, 0 AS errors, sum(Sum * p.2) AS duration_sum, sum(Count * p.2) AS duration_count,
-    sumForEach(arrayMap(c -> c * p.2, BucketCounts)) AS buckets
-FROM ${DATABASE}.ingest_histogram
+    sumMap(mapFilter((k, n) -> n != 0, mapFromArrays(bucket_keys, arrayMap(c -> c * p.2, PositiveBucketCounts)))) AS buckets
+FROM ${DATABASE}.ingest_exponential_histogram
 ARRAY JOIN if(we > ws AND we - ws <= 3600,
     arrayMap(b -> (toDateTime(b), (least(b + 300, we) - greatest(b, ws)) / (we - ws)),
         range(intDiv(ws, 300) * 300, we, 300)),
@@ -556,7 +554,7 @@ SELECT p.1 AS t,
     ResourceAttributes['deployment.id'] AS deployment,
     sumIf(Value * p.2, MetricName = 'code.function.calls') AS calls,
     sumIf(Value * p.2, MetricName = 'code.function.errors') AS errors,
-    0 AS duration_sum, 0 AS duration_count, CAST([], 'Array(Float64)') AS buckets
+    0 AS duration_sum, 0 AS duration_count, CAST(map(), 'Map(Int16, Float64)') AS buckets
 FROM ${DATABASE}.ingest_sum
 ARRAY JOIN if(we > ws AND we - ws <= 3600,
     arrayMap(b -> (toDateTime(b), (least(b + 300, we) - greatest(b, ws)) / (we - ws)),
@@ -577,7 +575,7 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.labels_flows TO ${DATABASE}.l
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
 SELECT ResourceAttributes['deployment.environment.name'] AS env, ServiceName AS service, Attributes['code.flow.name'] AS flow,
     '' AS function, max(TimeUnix) AS last_seen
-FROM ${DATABASE}.ingest_histogram
+FROM ${DATABASE}.ingest_exponential_histogram
 WHERE MetricName = 'code.flow.duration'
 GROUP BY env, service, flow;
 
@@ -594,8 +592,8 @@ GROUP BY env, service, flow, function;
 CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.flow_hourly_rollup TO ${DATABASE}.flow_hourly
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
 SELECT toStartOfHour(t) AS hour, env, service, flow, flow_type, method, route, status_code, end_reason, destination, deployment,
-    sum(duration_count) AS duration_count, sum(duration_sum) AS duration_sum, sumForEachState(buckets) AS buckets,
-    sum(e2e_count) AS e2e_count, sum(e2e_sum) AS e2e_sum, sumForEachState(e2e_buckets) AS e2e_buckets,
+    sum(duration_count) AS duration_count, sum(duration_sum) AS duration_sum, sumMap(buckets) AS buckets,
+    sum(e2e_count) AS e2e_count, sum(e2e_sum) AS e2e_sum, sumMap(e2e_buckets) AS e2e_buckets,
     sum(messages) AS messages, max(last_seen) AS last_seen,
     groupUniqArrayArrayMapState(1000)(attributes) AS attributes, sumMap(attribute_counts) AS attribute_counts
 FROM ${DATABASE}.flow
@@ -636,7 +634,7 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.function_hourly_rollup TO ${D
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
 SELECT toStartOfHour(t) AS hour, env, service, function, file, deployment,
     sum(calls) AS calls, sum(errors) AS errors, sum(duration_sum) AS duration_sum, sum(duration_count) AS duration_count,
-    sumForEachState(buckets) AS buckets,
+    sumMap(buckets) AS buckets,
     groupUniqArrayArrayMapState(1000)(attributes) AS attributes, sumMap(attribute_counts) AS attribute_counts
 FROM ${DATABASE}.function
 GROUP BY hour, env, service, function, file, deployment;
@@ -645,7 +643,7 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.function_metrics_hourly_rollu
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
 SELECT toStartOfHour(t) AS hour, env, service, function, file, caller, caller_file, flow, content_hash, error_type, deployment,
     sum(calls) AS calls, sum(errors) AS errors, sum(duration_sum) AS duration_sum, sum(duration_count) AS duration_count,
-    sumForEachState(buckets) AS buckets
+    sumMap(buckets) AS buckets
 FROM ${DATABASE}.function_metrics
 GROUP BY hour, env, service, function, file, caller, caller_file, flow, content_hash, error_type, deployment;
 
@@ -667,11 +665,11 @@ SELECT toStartOfMinute(if(we > ws AND we - ws <= 3600, StartTimeUnix, TimeUnix))
     Attributes['http.response.status_code'] AS status_code, Attributes['hud.flow.end_reason'] AS end_reason,
     if(Attributes['messaging.destination.name'] != '', Attributes['messaging.destination.name'],
         Attributes['messaging.destination.template']) AS destination, ResourceAttributes['deployment.id'] AS deployment,
-    0 AS duration_count, 0 AS duration_sum, CAST([], 'Array(Float64)') AS buckets,
-    0 AS e2e_count, 0 AS e2e_sum, CAST([], 'Array(Float64)') AS e2e_buckets, 0 AS messages,
+    0 AS duration_count, 0 AS duration_sum, CAST(map(), 'Map(Int16, Float64)') AS buckets,
+    0 AS e2e_count, 0 AS e2e_sum, CAST(map(), 'Map(Int16, Float64)') AS e2e_buckets, 0 AS messages,
     max(TimeUnix) AS last_seen, groupUniqArrayMap(1000)(other) AS attributes,
     sumMap(mapApply((k, v) -> (sipHash64(concat(k, '=', v)) % 100000, Count), other)) AS attribute_counts
-FROM ${DATABASE}.ingest_histogram
+FROM ${DATABASE}.ingest_exponential_histogram
 WHERE MetricName = 'code.flow.duration' AND AggregationTemporality = 1
 GROUP BY t, env, service, flow, flow_type, method, route, status_code, end_reason, destination, deployment;
 
@@ -687,9 +685,9 @@ SELECT toStartOfFiveMinutes(if(we > ws AND we - ws <= 3600, StartTimeUnix, TimeU
     ResourceAttributes['deployment.environment.name'] AS env, ServiceName AS service,
     Attributes['code.function.name'] AS function, Attributes['code.file.path'] AS file,
     ResourceAttributes['deployment.id'] AS deployment,
-    0 AS calls, 0 AS errors, 0 AS duration_sum, 0 AS duration_count, CAST([], 'Array(Float64)') AS buckets,
+    0 AS calls, 0 AS errors, 0 AS duration_sum, 0 AS duration_count, CAST(map(), 'Map(Int16, Float64)') AS buckets,
     groupUniqArrayMap(1000)(other) AS attributes,
     sumMap(mapApply((k, v) -> (sipHash64(concat(k, '=', v)) % 100000, Count), other)) AS attribute_counts
-FROM ${DATABASE}.ingest_histogram
+FROM ${DATABASE}.ingest_exponential_histogram
 WHERE MetricName = 'code.function.call.duration' AND AggregationTemporality = 1
 GROUP BY t, env, service, function, file, deployment;

@@ -130,7 +130,7 @@ pids=(); for _ in 1 2 3 4; do migrate up & pids+=($!); done
 for p in "${pids[@]}"; do wait "$p"; done
 tables=$(curl -s -u hud_backend:Backend-pass-1234 localhost:18123 \
   --data-binary "SELECT groupArray(name) FROM (SELECT name FROM system.tables WHERE database = '$DB' AND name NOT LIKE '.inner%' ORDER BY name)")
-want="['calling_flow','calling_flow_hourly','calling_flow_hourly_rollup','calling_flow_runs','duration_bounds','flow',\
+want="['calling_flow','calling_flow_hourly','calling_flow_hourly_rollup','calling_flow_runs','flow',\
 'flow_attributes','flow_duration','flow_e2e','flow_hourly','flow_hourly_rollup','flow_messages','function',\
 'function_attributes','function_calls','function_duration','function_hourly','function_hourly_rollup',\
 'function_metrics','function_metrics_calls','function_metrics_duration','function_metrics_hourly',\
@@ -147,14 +147,15 @@ done
 docker run --rm --network $NET "${MIGRATOR[@]}" -v "$DIR/../hud-migrate:/src" -w /src \
   -v hud-otelcol-gomod:/go/pkg/mod -v hud-otelcol-gocache:/root/.cache/go-build "$GO_IMAGE" go test -count=1 ./...
 
-echo "--- ClickStack collector: two deltas of a counter and of a scale-2 exponential histogram per flow and function, a gauge, one log, 3-minute deltas spread over their buckets"
+echo "--- ClickStack collector: two deltas of a counter and of a scale-2 exponential histogram per flow and function (scale 3 for queue latency), a gauge, one log, 3-minute deltas spread over their buckets"
 docker run -d --name smoke-clickstack --network $NET -p 14319:4318 -v "$DIR:/cfg:ro" \
   -e CLICKHOUSE_ENDPOINT=http://smoke-clickhouse:8123 -e CLICKHOUSE_USER=hud_collector -e CLICKHOUSE_PASSWORD=Collector-pass-1234 \
   -e HUD_CLICKHOUSE_DATABASE=$DB "$IMAGE" --config /cfg/clickstack.yaml >/dev/null
 for _ in $(seq 30); do curl -s -o /dev/null localhost:14319 && break; sleep 1; done
 
-# Buckets (2^(k/4), 2^((k+1)/4)] s for k = -14..-12 hold 1, 2 and 2 per delta, so per delta the classic bucket
-# le=0.0884 (just above 2^(-14/4)) holds 0, le=0.125 holds 3 and le=0.177 holds 5
+# Buckets (2^(k/4), 2^((k+1)/4)] s for k = -14..-12 hold 1, 2 and 2 per delta, so the median of both deltas (the 5th of
+# 10) is 3/4 into k = -13 on the log scale: 2^(-12.25/4) = 0.1197 s. Queue latency's scale-3 buckets -27..-25 go to
+# k = -14, -13 and -13.
 RESOURCE='{"attributes":[{"key":"service.name","value":{"stringValue":"smoke"}},{"key":"service.instance.id","value":{"stringValue":"pod-a"}},
   {"key":"deployment.environment.name","value":{"stringValue":"smoke-env"}},{"key":"deployment.id","value":{"stringValue":"d1"}},
   {"key":"telemetry.sdk.version","value":{"stringValue":"1.12.5"}}]}'
@@ -174,6 +175,8 @@ for r in 1 2; do
   {"name":"hud.flow.messages","sum":{"aggregationTemporality":1,"isMonotonic":true,"dataPoints":[{"asInt":"1","startTimeUnixNano":"$start","timeUnixNano":"$end"}]}},
   {"name":"code.flow.duration","unit":"s","exponentialHistogram":{"aggregationTemporality":1,"dataPoints":[{$FLOW,"startTimeUnixNano":"$start","timeUnixNano":"$end",
     "count":"5","sum":0.55,"scale":2,"zeroCount":"0","positive":{"offset":-14,"bucketCounts":["1","2","2"]}}]}},
+  {"name":"hud.flow.e2e.duration","unit":"s","exponentialHistogram":{"aggregationTemporality":1,"dataPoints":[{"attributes":[{"key":"code.flow.name","value":{"stringValue":"kafka|q|c"}}],"startTimeUnixNano":"$start","timeUnixNano":"$end",
+    "count":"3","sum":0.3,"scale":3,"zeroCount":"0","positive":{"offset":-27,"bucketCounts":["1","1","1"]}}]}},
   {"name":"process.uptime","unit":"s","gauge":{"dataPoints":[{"asDouble":$((40 + r)),"timeUnixNano":"$end"}]}},
   {"name":"hud.flow.calling_flows","sum":{"aggregationTemporality":1,"isMonotonic":true,"dataPoints":[{$CALLER,"asInt":"4","startTimeUnixNano":"$start","timeUnixNano":"$end"}]}},
   {"name":"hud.flow.issues","sum":{"aggregationTemporality":1,"isMonotonic":true,"dataPoints":[{$ISSUE,"asInt":"1","startTimeUnixNano":"$start","timeUnixNano":"$end"}]}},
@@ -198,22 +201,22 @@ curl -sf -X POST localhost:14319/v1/logs -H 'Content-Type: application/json' -d 
   {"timeUnixNano":"$((BASE * 1000000000))","eventName":"hud.forensic","severityText":"ERROR","body":{"stringValue":"{}"}}]}]}]}
 EOF
 
-# As hud_backend, the read-only user Hud's backend gets. Bucket k of the transform/classic grid is buckets[k + 1]:
-# le=0.0884 is [14], le=0.125 is [15], le=0.177 is [16].
+# As hud_backend, the read-only user Hud's backend gets.
 sql() { curl -s -u hud_backend:Backend-pass-1234 localhost:18123 --data-binary "$1"; }
 F="$DB.flow WHERE service = 'smoke' AND env = 'smoke-env'"
 poll sql smoke-clickstack \
   "SELECT sum(messages) FROM $F=2" \
   "SELECT sum(duration_count) FROM $F AND flow = 'http|/x|get' AND status_code = '500' AND deployment = 'd1'=10" \
-  "SELECT arrayCumSum(sumForEach(buckets))[14] FROM $F=0" \
-  "SELECT arrayCumSum(sumForEach(buckets))[15] FROM $F=6" \
-  "SELECT arrayCumSum(sumForEach(buckets))[16] FROM $F=10" \
+  "SELECT sumMap(buckets) FROM $F={-14:2,-13:4,-12:4}" \
+  "SELECT round(hud_duration_quantile(0.5, sumMap(buckets)), 4) FROM $F=0.1197" \
+  "SELECT sumMap(e2e_buckets) FROM $F AND flow = 'kafka|q|c'={-14:2,-13:4}" \
   "SELECT sum(duration_count) FROM $DB.flow_hourly WHERE service = 'smoke'=10" \
   "SELECT sum(runs) FROM $DB.session_flow WHERE instance = 'pod-a'=10" \
   "SELECT sum(errors) FROM $DB.session_flow WHERE instance = 'pod-a'=10" \
   "SELECT sum(calls) FROM $DB.function WHERE function = 'f' AND deployment = 'd1'=2" \
   "SELECT sum(duration_count) FROM $DB.function WHERE function = 'f'=10" \
-  "SELECT arrayCumSum(sumForEach(buckets))[15] FROM $DB.function WHERE function = 'f'=6" \
+  "SELECT sumMap(buckets) FROM $DB.function WHERE function = 'f'={-14:2,-13:4,-12:4}" \
+  "SELECT sumMap(buckets) FROM $DB.function_hourly WHERE function = 'f'={-14:2,-13:4,-12:4}" \
   "SELECT sum(calls) FROM $DB.function_metrics_hourly WHERE function = 'f' AND flow = 'http|/x|get' AND caller = 'g' AND caller_file = 'g.ts' AND content_hash = 'h1'=2" \
   "SELECT hud_attribute_count('hud.function.kind', 'method', sumMap(attribute_counts)) FROM $DB.function_hourly WHERE function = 'f'=10" \
   "SELECT groupUniqArrayArrayMapMerge(1000)(attributes)['telemetry.sdk.version'] FROM $DB.flow_hourly WHERE service = 'smoke'=['1.12.5']" \
