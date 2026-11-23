@@ -88,7 +88,7 @@ func TestUp(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for table, want := range map[string]uint8{"metrics": 0, "otel_logs": 1, "otel_metrics_histogram": 1, "endpoint_durations": 1, "endpoint_metrics_lean_1h": 1, "endpoint_metrics_lean_1h_v2": 1, "endpoints": 1} {
+	for table, want := range map[string]uint8{"metrics": 0, "otel_logs": 1, "otel_metrics_histogram": 1, "endpoint_durations": 1, "endpoint_metrics_lean_1h": 1, "endpoints": 1} {
 		var exists uint8
 		if err := db.QueryRowContext(ctx, "EXISTS TABLE "+database+"."+table).Scan(&exists); err != nil || exists != want {
 			t.Errorf("%s.%s: exists=%d, want %d, err=%v", database, table, exists, want, err)

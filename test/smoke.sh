@@ -4,7 +4,7 @@
 # Then the ClickHouse path: hud-migrate creates the schema, and deltas (with a calling flow, an issue and function
 # errors), an exponential histogram, process gauges and a log sent through test/clickhouse.yaml must come out of the SQL
 # tables and otel_logs exactly, a metric no view reads must stay in otel_metrics_*, a flow's feature flag combinations
-# must stay separate rows in the _v2 tables, and a retried insert must count once.
+# must stay separate rows in the endpoint tables, and a retried insert must count once.
 set -euo pipefail
 
 IMAGE=${IMAGE:-hud-otelcol:dev}
@@ -132,12 +132,9 @@ pids=(); for _ in 1 2 3 4; do migrate up & pids+=($!); done
 for p in "${pids[@]}"; do wait "$p"; done
 tables=$(curl -s -u hud_backend:Backend-pass-1234 localhost:18123 \
   --data-binary "SELECT groupArray(name) FROM (SELECT name FROM system.tables WHERE database = '$DB' AND name NOT LIKE '.inner%' ORDER BY name)")
-want="['endpoint_counters','endpoint_counters_mv','endpoint_counters_v2','endpoint_counters_v2_mv','endpoint_durations',\
-'endpoint_durations_mv','endpoint_durations_v2','endpoint_durations_v2_mv','endpoint_metrics_1h',\
-'endpoint_metrics_1h_from_counters_mv','endpoint_metrics_1h_from_durations_mv','endpoint_metrics_1h_v2',\
-'endpoint_metrics_1h_v2_from_counters_mv','endpoint_metrics_1h_v2_from_durations_mv','endpoint_metrics_lean_1h',\
-'endpoint_metrics_lean_1h_from_counters_mv','endpoint_metrics_lean_1h_from_durations_mv','endpoint_metrics_lean_1h_v2',\
-'endpoint_metrics_lean_1h_v2_from_counters_mv','endpoint_metrics_lean_1h_v2_from_durations_mv','endpoints',\
+want="['endpoint_counters','endpoint_counters_mv','endpoint_durations','endpoint_durations_mv','endpoint_metrics_1h',\
+'endpoint_metrics_1h_from_counters_mv','endpoint_metrics_1h_from_durations_mv','endpoint_metrics_lean_1h',\
+'endpoint_metrics_lean_1h_from_counters_mv','endpoint_metrics_lean_1h_from_durations_mv','endpoints',\
 'endpoints_from_durations_mv','endpoints_from_process_mv','function_counters','function_counters_mv',\
 'function_durations','function_durations_mv','function_metrics_1h','function_metrics_1h_from_counters_mv',\
 'function_metrics_1h_from_durations_mv','function_metrics_lean_1h','function_metrics_lean_1h_from_counters_mv',\
@@ -271,7 +268,7 @@ poll sql smoke-clickstack \
   "SELECT toString((count(), sum(messages), toUnixTimestamp(min(t)))) FROM $DB.endpoint_counters WHERE service = 'smoke-long'=(1,7,$H)"
 poll sql smoke-clickstack "SELECT count() FROM $DB.otel_logs WHERE EventName = 'hud.forensic' AND ServiceName = 'smoke'=1"
 
-echo "--- feature flags: two combinations (about 0.1 s and 2 s), an overflow and runs without flags stay separate _v2 rows, the 0002 tables still merge them, and the flow dashboard's 'By feature flag' query reads them"
+echo "--- feature flags: two combinations (about 0.1 s and 2 s), an overflow and runs without flags stay separate rows in the endpoint tables, and the flow dashboard's 'By feature flag' query reads them"
 FLAGS_RESOURCE='{"attributes":[{"key":"service.name","value":{"stringValue":"smoke-flags"}},{"key":"service.instance.id","value":{"stringValue":"pod-f"}},
   {"key":"deployment.environment.name","value":{"stringValue":"smoke-env"}}]}'
 ff() { # status code, then attribute name and boolean pairs
@@ -298,10 +295,10 @@ SELECT multiIf(ff = '', 'no flags', ff = '__hud_other__', 'other combinations', 
     round(1000 * td / tn, 1) AS `Avg ms`, round(1e3 * hud_duration_quantile(0.9, tb), 1) AS `P90 ms`, round(ti) AS Issues
 FROM (SELECT feature_flags AS ff, sum(runs) AS tn, sum(errors) AS te, sumIf(issues, flow_type != 'http') AS tio,
           sum(issues) AS ti, sum(dur) AS td, sumMap(bk) AS tb
-      FROM (SELECT t, flow_type, feature_flags, duration_count AS runs, if(startsWith(status_code, '5'), duration_count, 0) AS errors, 0 AS issues, duration_sum AS dur, buckets AS bk FROM hud_otel.endpoint_durations_v2 WHERE $__fromTime >= now() - INTERVAL 30 DAY AND t >= $__fromTime AND t < $__toTime AND (t < toStartOfHour($__fromTime) + INTERVAL 1 HOUR OR (toStartOfHour($__toTime) > toStartOfHour($__fromTime) AND t >= toStartOfHour($__toTime))) AND $__filter(env, $env) AND $__filter(service, $service) AND $__filter(flow, $endpoint)
-  UNION ALL SELECT t, flow_type, feature_flags, 0 AS runs, 0 AS errors, issues, 0 AS dur, map() AS bk FROM hud_otel.endpoint_counters_v2 WHERE $__fromTime >= now() - INTERVAL 30 DAY AND t >= $__fromTime AND t < $__toTime AND (t < toStartOfHour($__fromTime) + INTERVAL 1 HOUR OR (toStartOfHour($__toTime) > toStartOfHour($__fromTime) AND t >= toStartOfHour($__toTime))) AND $__filter(env, $env) AND $__filter(service, $service) AND $__filter(flow, $endpoint)
-  UNION ALL SELECT hour AS t, flow_type, feature_flags, duration_count AS runs, if(startsWith(status_code, '5'), duration_count, 0) AS errors, issues, duration_sum AS dur, buckets AS bk FROM hud_otel.endpoint_metrics_lean_1h_v2 WHERE $__fromTime >= now() - INTERVAL 30 DAY AND hour >= toStartOfHour($__fromTime) + INTERVAL 1 HOUR AND hour < toStartOfHour($__toTime) AND $__filter(env, $env) AND $__filter(service, $service) AND $__filter(flow, $endpoint)
-  UNION ALL SELECT hour AS t, flow_type, feature_flags, duration_count AS runs, if(startsWith(status_code, '5'), duration_count, 0) AS errors, issues, duration_sum AS dur, buckets AS bk FROM hud_otel.endpoint_metrics_lean_1h_v2 WHERE NOT ($__fromTime >= now() - INTERVAL 30 DAY) AND hour >= toStartOfHour($__fromTime) AND hour < $__toTime AND $__filter(env, $env) AND $__filter(service, $service) AND $__filter(flow, $endpoint))
+      FROM (SELECT t, flow_type, feature_flags, duration_count AS runs, if(startsWith(status_code, '5'), duration_count, 0) AS errors, 0 AS issues, duration_sum AS dur, buckets AS bk FROM hud_otel.endpoint_durations WHERE $__fromTime >= now() - INTERVAL 30 DAY AND t >= $__fromTime AND t < $__toTime AND (t < toStartOfHour($__fromTime) + INTERVAL 1 HOUR OR (toStartOfHour($__toTime) > toStartOfHour($__fromTime) AND t >= toStartOfHour($__toTime))) AND $__filter(env, $env) AND $__filter(service, $service) AND $__filter(flow, $endpoint)
+  UNION ALL SELECT t, flow_type, feature_flags, 0 AS runs, 0 AS errors, issues, 0 AS dur, map() AS bk FROM hud_otel.endpoint_counters WHERE $__fromTime >= now() - INTERVAL 30 DAY AND t >= $__fromTime AND t < $__toTime AND (t < toStartOfHour($__fromTime) + INTERVAL 1 HOUR OR (toStartOfHour($__toTime) > toStartOfHour($__fromTime) AND t >= toStartOfHour($__toTime))) AND $__filter(env, $env) AND $__filter(service, $service) AND $__filter(flow, $endpoint)
+  UNION ALL SELECT hour AS t, flow_type, feature_flags, duration_count AS runs, if(startsWith(status_code, '5'), duration_count, 0) AS errors, issues, duration_sum AS dur, buckets AS bk FROM hud_otel.endpoint_metrics_lean_1h WHERE $__fromTime >= now() - INTERVAL 30 DAY AND hour >= toStartOfHour($__fromTime) + INTERVAL 1 HOUR AND hour < toStartOfHour($__toTime) AND $__filter(env, $env) AND $__filter(service, $service) AND $__filter(flow, $endpoint)
+  UNION ALL SELECT hour AS t, flow_type, feature_flags, duration_count AS runs, if(startsWith(status_code, '5'), duration_count, 0) AS errors, issues, duration_sum AS dur, buckets AS bk FROM hud_otel.endpoint_metrics_lean_1h WHERE NOT ($__fromTime >= now() - INTERVAL 30 DAY) AND hour >= toStartOfHour($__fromTime) AND hour < $__toTime AND $__filter(env, $env) AND $__filter(service, $service) AND $__filter(flow, $endpoint))
       GROUP BY ff HAVING tn > 0)
 ORDER BY Runs DESC
 EOF
@@ -309,18 +306,17 @@ EOF
 PANEL=${PANEL//hud_otel./$DB.} PANEL=${PANEL//\$__fromTime/toDateTime($((BASE - 7200)))} PANEL=${PANEL//\$__toTime/toDateTime($((BASE + 60)))}
 PANEL=${PANEL//\$__filter(env, \$env)/env = \'smoke-env\'} PANEL=${PANEL//\$__filter(service, \$service)/service = \'smoke-flags\'}
 PANEL=${PANEL//\$__filter(flow, \$endpoint)/flow = \'http|\/f|get\'}
-V2="$DB.endpoint_durations_v2 WHERE service = 'smoke-flags'"
+FD="$DB.endpoint_durations WHERE service = 'smoke-flags'"
 poll sql smoke-clickstack \
-  "SELECT count() FROM $V2=4" \
-  "SELECT toString((count(), sum(duration_count), sumMap(buckets))) FROM $V2 AND feature_flags = 'fast_path=false,new_checkout=true' AND status_code = '200'=(1,4,{-14:4})" \
-  "SELECT toString((count(), sum(duration_count), sumMap(buckets))) FROM $V2 AND feature_flags = 'fast_path=true,new_checkout=false' AND status_code = '500'=(1,2,{4:2})" \
-  "SELECT sum(duration_count) FROM $V2 AND feature_flags = '__hud_other__'=1" \
-  "SELECT sum(duration_count) FROM $V2 AND feature_flags = ''=3" \
-  "SELECT countIf(arrayExists(k -> startsWith(k, 'hud.feature_flag'), mapKeys(attributes))) FROM $V2=0" \
-  "SELECT toString((count(), sum(duration_count))) FROM $DB.endpoint_durations WHERE service = 'smoke-flags'=(2,10)" \
-  "SELECT sum(issues) FROM $DB.endpoint_counters_v2 WHERE fingerprint = 'fp-flags' AND feature_flags = 'fast_path=false,new_checkout=true'=1" \
-  "SELECT toString((sum(duration_count), sum(issues))) FROM $DB.endpoint_metrics_lean_1h_v2 WHERE service = 'smoke-flags' AND feature_flags = 'fast_path=false,new_checkout=true'=(4,1)" \
-  "SELECT sum(duration_count) FROM $DB.endpoint_metrics_1h_v2 WHERE instance = 'pod-f' AND feature_flags = 'fast_path=true,new_checkout=false' AND status_code = '500'=2" \
+  "SELECT count() FROM $FD=4" \
+  "SELECT toString((count(), sum(duration_count), sumMap(buckets))) FROM $FD AND feature_flags = 'fast_path=false,new_checkout=true' AND status_code = '200'=(1,4,{-14:4})" \
+  "SELECT toString((count(), sum(duration_count), sumMap(buckets))) FROM $FD AND feature_flags = 'fast_path=true,new_checkout=false' AND status_code = '500'=(1,2,{4:2})" \
+  "SELECT sum(duration_count) FROM $FD AND feature_flags = '__hud_other__'=1" \
+  "SELECT sum(duration_count) FROM $FD AND feature_flags = ''=3" \
+  "SELECT countIf(arrayExists(k -> startsWith(k, 'hud.feature_flag'), mapKeys(attributes))) FROM $FD=0" \
+  "SELECT sum(issues) FROM $DB.endpoint_counters WHERE fingerprint = 'fp-flags' AND feature_flags = 'fast_path=false,new_checkout=true'=1" \
+  "SELECT toString((sum(duration_count), sum(issues))) FROM $DB.endpoint_metrics_lean_1h WHERE service = 'smoke-flags' AND feature_flags = 'fast_path=false,new_checkout=true'=(4,1)" \
+  "SELECT sum(duration_count) FROM $DB.endpoint_metrics_1h WHERE instance = 'pod-f' AND feature_flags = 'fast_path=true,new_checkout=false' AND status_code = '500'=2" \
   "SELECT toString(groupArray((Runs, \`Err Rate (%)\`, \`Avg ms\`, \`P90 ms\`, Issues))) FROM ($PANEL)=[(4,0,100,103.3,1),(3,0,100,103.3,0),(2,100,2000,2337.6,0),(1,0,100,103.3,0)]"
 
 echo "--- retried insert: the exporter resends a failed batch as is (plain insert, dedup through the views, as clickhouse.yaml), which counts once; another pod's equal point still counts"
