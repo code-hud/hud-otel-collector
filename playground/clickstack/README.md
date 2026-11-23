@@ -27,7 +27,7 @@ from the endpoint table:
 curl -s -u hud_backend:Backend-pass-1234 localhost:8123 --data-binary "
   SELECT flow, sum(duration_count) AS runs, sumIf(duration_count, startsWith(status_code, '5')) AS errors_5xx,
     round(1e3 * hud_duration_quantile(0.9, sumMap(buckets)), 1) AS p90_ms
-  FROM hud_otel.endpoint_metrics WHERE t >= now() - INTERVAL 1 HOUR GROUP BY flow FORMAT PrettyCompact"
+  FROM hud_otel.endpoint_durations WHERE t >= now() - INTERVAL 1 HOUR GROUP BY flow FORMAT PrettyCompact"
 ```
 
 Logs:

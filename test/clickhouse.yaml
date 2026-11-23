@@ -27,6 +27,14 @@ processors:
   batch:
     timeout: 5s
     send_batch_size: 10000
+  # The process memory sums become gauges, so they arrive with the other process gauges in one insert and fill the
+  # same process_metrics row (hud-migrate/schema/0002_sql.sql). Without it process_metrics has no memory: its view
+  # reads only otel_metrics_gauge. Lossless because the SDK sends both as cumulative non-monotonic sums (current bytes).
+  transform/process_memory:
+    metric_statements:
+      - context: metric
+        statements:
+          - convert_sum_to_gauge() where metric.name == "process.memory.usage" or metric.name == "hud.process.memory.limit"
 
 exporters:
   clickhouse:
@@ -49,7 +57,7 @@ service:
   pipelines:
     metrics:
       receivers: [otlp]
-      processors: [memory_limiter, batch]
+      processors: [memory_limiter, transform/process_memory, batch]
       exporters: [clickhouse]
     logs:
       receivers: [otlp]

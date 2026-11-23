@@ -72,21 +72,28 @@ out freely: it only batches the inserts.
 
 | Tables | Grain | One row per (and what it sums) |
 | --- | --- | --- |
-| `endpoint_metrics`, `endpoint_metrics_buckets` | export, hour | flow, SDK session (`service.instance.id`), deployment, and per metric: status code, method, route, end reason and queue (runs, duration, queue latency (e2e), messages), issue fingerprint and user error (issues), the flow that called it (parent) and started it (root) (`calling_runs`) |
-| `endpoint_metrics_lean` | hour | the same without the session |
-| `machine_metrics`, `machine_metrics_buckets` | export, hour | SDK session and its pod: last report, uptime, CPU, memory and its limit, event loop utilization |
-| `function_metrics`, `function_metrics_buckets` | export, hour | function, file, caller function (name and file), flow, content hash, error type, deployment: calls, errors, duration |
-| `function_metrics_lean` | hour | function, file, flow, deployment |
+| `endpoint_durations` | export | flow, SDK session (`service.instance.id`), deployment, status code, method, route, end reason and queue: runs, duration, queue latency (e2e) |
+| `endpoint_counters` | export | flow, SDK session, deployment, and per counter: queue (messages), issue fingerprint and user error (issues), status code and the flow that called it (parent) and started it (root) (`calling_runs`) |
+| `endpoint_metrics_1h` | hour | both endpoint tables |
+| `endpoint_metrics_lean_1h` | hour | the same without the session |
+| `process_metrics`, `process_metrics_1h` | export, hour | SDK session and its pod: last report, uptime, CPU, memory and its limit, event loop utilization |
+| `function_durations` | export | function, file, caller function (name and file), flow, content hash, deployment: duration |
+| `function_counters` | export | the same and error type: calls, errors |
+| `function_metrics_1h` | hour | both function tables |
+| `function_metrics_lean_1h` | hour | function, file, flow, deployment |
 | `endpoints` | | every service (with `flow = ''`, from its process metrics) and flow seen in the last 180 days (the dashboards' selectors) |
 | `functions` | | every function seen in the last 180 days, with its flow (the dashboards' selectors) |
 
-Each view of `endpoint_metrics` fills its own columns and leaves the others `''` or 0, so a 5xx rate is
-`sumIf(duration_count, startsWith(status_code, '5')) / sum(duration_count)`. Each fine table rolls up into its
-`_buckets` table, and the endpoint and function tables also into their `_lean` table, with far fewer rows: what
+Each fine table is filled by one view over one `otel_metrics_*` table: the exporter inserts sums, histograms and
+gauges separately, so a table fed from two would get a half-empty row from each. Endpoints and functions therefore
+have a durations table (`_durations`) and a counters table (`_counters`), and the collector turns the process memory
+sums into gauges so `process_metrics` stays one table. A 5xx rate is
+`sumIf(duration_count, startsWith(status_code, '5')) / sum(duration_count)`. Both tables of a family roll up into its
+`_metrics_1h` table, and the endpoint and function tables also into their `_metrics_lean_1h` table, with far fewer rows: what
 most charts read. Fine tables are plain `MergeTree` with a row per export (a point as the SDK sent it, at its end, one
-row per key, pod, export and view): sum them with `sum`, `sumMap(buckets)` and `groupUniqArrayArrayMap(1000)(attributes)`. They keep 30
+row per key, pod and export): sum them with `sum`, `sumMap(buckets)` and `groupUniqArrayArrayMap(1000)(attributes)`. They keep 30
 days, fixed because the dashboards read them up to 30 days back and the hourly tables beyond. Hourly tables are
-`AggregatingMergeTree` of aggregate states with the fine table's columns and keep 90 days (`_lean`: 180): read
+`AggregatingMergeTree` of aggregate states with their fine tables' columns and keep 90 days (`_lean_1h`: 180): read
 them with `-Merge`, or `finalizeAggregation()` a column to union it with the fine table's. Every table's parts are
 daily, so TTL drops whole days. The views of one insert are not atomic (a failing view can leave others written) and
 the collector retries the whole batch, so every metric table keeps the hashes of its last 10000 inserts
@@ -104,7 +111,7 @@ methods (the flow's are in its name). Every listed value with its runs:
 SELECT k AS attribute, v AS value, hud_attribute_count(k, v, counts) AS runs
 FROM (
   SELECT groupUniqArrayArrayMapMerge(1000)(attributes) AS vals, sumMap(attribute_counts) AS counts
-  FROM hud_otel.function_metrics_lean WHERE service = 'checkout' AND hour >= now() - INTERVAL 1 DAY
+  FROM hud_otel.function_metrics_lean_1h WHERE service = 'checkout' AND hour >= now() - INTERVAL 1 DAY
 )
 ARRAY JOIN mapKeys(vals) AS k, mapValues(vals) AS vs
 ARRAY JOIN vs AS v

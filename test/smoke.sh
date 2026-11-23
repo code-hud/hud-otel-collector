@@ -131,14 +131,15 @@ pids=(); for _ in 1 2 3 4; do migrate up & pids+=($!); done
 for p in "${pids[@]}"; do wait "$p"; done
 tables=$(curl -s -u hud_backend:Backend-pass-1234 localhost:18123 \
   --data-binary "SELECT groupArray(name) FROM (SELECT name FROM system.tables WHERE database = '$DB' AND name NOT LIKE '.inner%' ORDER BY name)")
-want="['endpoint_metrics','endpoint_metrics_buckets','endpoint_metrics_buckets_rollup',\
-'endpoint_metrics_calling_flows','endpoint_metrics_duration','endpoint_metrics_e2e','endpoint_metrics_issues',\
-'endpoint_metrics_lean','endpoint_metrics_lean_rollup','endpoint_metrics_messages','endpoints',\
-'endpoints_flows','endpoints_services','function_metrics','function_metrics_buckets',\
-'function_metrics_buckets_rollup','function_metrics_calls','function_metrics_duration','function_metrics_lean',\
-'function_metrics_lean_rollup','functions','functions_calls','machine_metrics','machine_metrics_buckets',\
-'machine_metrics_buckets_rollup','machine_metrics_gauge','machine_metrics_sum','metrics','otel_logs','otel_metrics_exponential_histogram',\
-'otel_metrics_gauge','otel_metrics_histogram','otel_metrics_sum','otel_metrics_summary']"
+want="['endpoint_counters','endpoint_counters_mv','endpoint_durations','endpoint_durations_mv','endpoint_metrics_1h',\
+'endpoint_metrics_1h_from_counters_mv','endpoint_metrics_1h_from_durations_mv','endpoint_metrics_lean_1h',\
+'endpoint_metrics_lean_1h_from_counters_mv','endpoint_metrics_lean_1h_from_durations_mv','endpoints',\
+'endpoints_from_durations_mv','endpoints_from_process_mv','function_counters','function_counters_mv',\
+'function_durations','function_durations_mv','function_metrics_1h','function_metrics_1h_from_counters_mv',\
+'function_metrics_1h_from_durations_mv','function_metrics_lean_1h','function_metrics_lean_1h_from_counters_mv',\
+'function_metrics_lean_1h_from_durations_mv','functions','functions_mv','metrics','otel_logs',\
+'otel_metrics_exponential_histogram','otel_metrics_gauge','otel_metrics_histogram','otel_metrics_sum',\
+'otel_metrics_summary','process_metrics','process_metrics_1h','process_metrics_1h_mv','process_metrics_mv']"
 [ "$tables" = "$want" ] || { echo "FAIL: $DB has $tables after up, want $want"; exit 1; }
 for q in "DROP TABLE $DB.otel_logs" "ALTER TABLE $DB.otel_logs ADD INDEX smoke_idx Body TYPE bloom_filter" \
   "DROP DATABASE $DB" "CREATE DATABASE hud_otel"; do
@@ -147,7 +148,7 @@ done
 docker run --rm --network $NET "${MIGRATOR[@]}" -v "$DIR/../hud-migrate:/src" -w /src \
   -v hud-otelcol-gomod:/go/pkg/mod -v hud-otelcol-gocache:/root/.cache/go-build "$GO_IMAGE" go test -count=1 ./...
 
-echo "--- ClickHouse collector: two deltas of a counter and of a scale-2 exponential histogram per flow and function (scale 3 for queue latency), function errors, process gauges and memory, a metric no view reads, one log, 3-minute deltas across an hour, a 2-hour delta"
+echo "--- ClickHouse collector: two deltas of a counter and of a scale-2 exponential histogram per flow and function (scale 3 for queue latency, next to a Kafka run), function errors, process gauges and memory, a metric no view reads, one log, 3-minute deltas across an hour, a 2-hour delta; no key twice in a fine table"
 docker run -d --name smoke-clickstack --network $NET -p 14319:4318 -v "$DIR:/cfg:ro" \
   -e CLICKHOUSE_ENDPOINT=http://smoke-clickhouse:8123 -e CLICKHOUSE_USER=hud_collector -e CLICKHOUSE_PASSWORD=Collector-pass-1234 \
   -e HUD_CLICKHOUSE_DATABASE=$DB "$IMAGE" --config /cfg/clickhouse.yaml >/dev/null
@@ -155,7 +156,8 @@ for _ in $(seq 30); do curl -s -o /dev/null localhost:14319 && break; sleep 1; d
 
 # Buckets (2^(k/4), 2^((k+1)/4)] s for k = -14..-12 hold 1, 2 and 2 per delta, so the median of both deltas (the 5th of
 # 10) is 3/4 into k = -13 on the log scale: 2^(-12.25/4) = 0.1197 s. Queue latency's scale-3 buckets -27..-25 go to
-# k = -14, -13 and -13.
+# k = -14, -13 and -13. The Kafka flow's run (one per delta, zero-length so it adds no bucket) shares its queue
+# latency's row.
 RESOURCE='{"attributes":[{"key":"service.name","value":{"stringValue":"smoke"}},{"key":"service.instance.id","value":{"stringValue":"pod-a"}},
   {"key":"deployment.environment.name","value":{"stringValue":"smoke-env"}},{"key":"deployment.id","value":{"stringValue":"d1"}},
   {"key":"telemetry.sdk.version","value":{"stringValue":"1.12.5"}}]}'
@@ -164,10 +166,12 @@ FUNCTION='"attributes":[{"key":"code.function.name","value":{"stringValue":"f"}}
   {"key":"hud.function.content_hash","value":{"stringValue":"h1"}},
   {"key":"hud.function.kind","value":{"stringValue":"method"}}]'
 FLOW='"attributes":[{"key":"code.flow.name","value":{"stringValue":"http|/x|get"}},{"key":"code.flow.type","value":{"stringValue":"http"}},{"key":"http.response.status_code","value":{"intValue":"500"}}]'
+KAFKA='"attributes":[{"key":"code.flow.name","value":{"stringValue":"kafka|q|c"}}]'
 CALLER='"attributes":[{"key":"code.flow.name","value":{"stringValue":"http|/x|get"}},{"key":"hud.parent.service.name","value":{"stringValue":"caller"}},
   {"key":"hud.parent.flow.name","value":{"stringValue":"kafka|t|g"}},{"key":"hud.root.service.name","value":{"stringValue":"edge"}},{"key":"hud.root.flow.name","value":{"stringValue":"http|/y|post"}}]'
 ISSUE='"attributes":[{"key":"code.flow.name","value":{"stringValue":"http|/x|get"}},{"key":"issue.fingerprint","value":{"stringValue":"fp"}},
-  {"key":"hud.issue.caught","value":{"boolValue":false}},{"key":"hud.issue.user_error","value":{"stringValue":"card declined"}}]'
+  {"key":"hud.issue.caught","value":{"boolValue":false}},{"key":"hud.issue.user_error","value":{"stringValue":"card declined"}},
+  {"key":"hud.parent.service.name","value":{"stringValue":"caller"}},{"key":"hud.parent.flow.name","value":{"stringValue":"kafka|t|g"}}]'
 FUNCTION_ERROR="${FUNCTION%]}"',{"key":"error.type","value":{"stringValue":"TypeError"}}]'
 CPU=(0 0.25 0.75) ELU=(0 0.1 0.3)
 for r in 1 2; do
@@ -176,8 +180,9 @@ for r in 1 2; do
 {"resourceMetrics":[{"resource":$RESOURCE,"scopeMetrics":[{"metrics":[
   {"name":"hud.flow.messages","sum":{"aggregationTemporality":1,"isMonotonic":true,"dataPoints":[{"asInt":"1","startTimeUnixNano":"$start","timeUnixNano":"$end"}]}},
   {"name":"code.flow.duration","unit":"s","exponentialHistogram":{"aggregationTemporality":1,"dataPoints":[{$FLOW,"startTimeUnixNano":"$start","timeUnixNano":"$end",
-    "count":"5","sum":0.55,"scale":2,"zeroCount":"0","positive":{"offset":-14,"bucketCounts":["1","2","2"]}}]}},
-  {"name":"hud.flow.e2e.duration","unit":"s","exponentialHistogram":{"aggregationTemporality":1,"dataPoints":[{"attributes":[{"key":"code.flow.name","value":{"stringValue":"kafka|q|c"}}],"startTimeUnixNano":"$start","timeUnixNano":"$end",
+    "count":"5","sum":0.55,"scale":2,"zeroCount":"0","positive":{"offset":-14,"bucketCounts":["1","2","2"]}},
+    {$KAFKA,"startTimeUnixNano":"$start","timeUnixNano":"$end","count":"1","sum":0,"scale":2,"zeroCount":"1"}]}},
+  {"name":"hud.flow.e2e.duration","unit":"s","exponentialHistogram":{"aggregationTemporality":1,"dataPoints":[{$KAFKA,"startTimeUnixNano":"$start","timeUnixNano":"$end",
     "count":"3","sum":0.3,"scale":3,"zeroCount":"0","positive":{"offset":-27,"bucketCounts":["1","1","1"]}}]}},
   {"name":"process.uptime","unit":"s","gauge":{"dataPoints":[{"asDouble":$((40 + r)),"timeUnixNano":"$end"}]}},
   {"name":"process.cpu.utilization","gauge":{"dataPoints":[{"asDouble":${CPU[$r]},"timeUnixNano":"$end"}]}},
@@ -213,50 +218,53 @@ EOF
 
 # As hud_backend, the read-only user Hud's backend gets.
 sql() { curl -s -u hud_backend:Backend-pass-1234 localhost:18123 --data-binary "$1"; }
-F="$DB.endpoint_metrics WHERE service = 'smoke' AND env = 'smoke-env'"
+F="$DB.endpoint_durations WHERE service = 'smoke' AND env = 'smoke-env'"
 FLOW_ROWS="service = 'smoke' AND flow = 'http|/x|get' AND fingerprint = '' AND parent_flow = ''"
 poll sql smoke-clickstack \
-  "SELECT sum(messages) FROM $F=2" \
+  "SELECT sum(messages) FROM $DB.endpoint_counters WHERE service = 'smoke' AND env = 'smoke-env'=2" \
   "SELECT sum(duration_count) FROM $F AND flow = 'http|/x|get' AND status_code = '500' AND deployment = 'd1'=10" \
   "SELECT sumMap(buckets) FROM $F={-14:2,-13:4,-12:4}" \
   "SELECT round(hud_duration_quantile(0.5, sumMap(buckets)), 4) FROM $F=0.1197" \
   "SELECT sumMap(e2e_buckets) FROM $F AND flow = 'kafka|q|c'={-14:2,-13:4}" \
-  "SELECT sum(duration_count) FROM $DB.endpoint_metrics_lean WHERE service = 'smoke'=10" \
-  "SELECT sumMap(buckets) FROM $DB.endpoint_metrics_lean WHERE service = 'smoke'={-14:2,-13:4,-12:4}" \
-  "SELECT sumMap(buckets) FROM $DB.endpoint_metrics_buckets WHERE instance = 'pod-a'={-14:2,-13:4,-12:4}" \
-  "SELECT sumIf(duration_count, startsWith(status_code, '5')) FROM $DB.endpoint_metrics_buckets WHERE instance = 'pod-a'=10" \
-  "SELECT sum(calls) FROM $DB.function_metrics WHERE function = 'f' AND deployment = 'd1'=2" \
-  "SELECT sum(duration_count) FROM $DB.function_metrics WHERE function = 'f'=10" \
-  "SELECT sumMap(buckets) FROM $DB.function_metrics WHERE function = 'f'={-14:2,-13:4,-12:4}" \
-  "SELECT sumMap(buckets) FROM $DB.function_metrics_lean WHERE function = 'f'={-14:2,-13:4,-12:4}" \
-  "SELECT sumMap(buckets) FROM $DB.function_metrics_buckets WHERE function = 'f' AND caller = 'g'={-14:2,-13:4,-12:4}" \
-  "SELECT sum(calls) FROM $DB.function_metrics_buckets WHERE function = 'f' AND flow = 'http|/x|get' AND caller = 'g' AND caller_file = 'g.ts' AND content_hash = 'h1'=2" \
-  "SELECT sum(errors) FROM $DB.function_metrics_lean WHERE function = 'f'=2" \
-  "SELECT sum(errors) FROM $DB.function_metrics_buckets WHERE function = 'f' AND error_type = 'TypeError'=2" \
-  "SELECT hud_attribute_count('hud.function.kind', 'method', sumMap(attribute_counts)) FROM $DB.function_metrics_lean WHERE function = 'f'=10" \
-  "SELECT groupUniqArrayArrayMapMerge(1000)(attributes)['telemetry.sdk.version'] FROM $DB.endpoint_metrics_lean WHERE service = 'smoke'=['1.12.5']" \
-  "SELECT arraySort(mapKeys(groupUniqArrayArrayMapMerge(1000)(attributes))) FROM $DB.function_metrics_lean WHERE function = 'f'=['hud.function.kind','telemetry.sdk.version']" \
-  "SELECT length(sumMap(attribute_counts)) FROM $DB.function_metrics_buckets WHERE function = 'f'=2" \
-  "SELECT hud_attribute_count('hud.function.kind', 'method', sumMap(attribute_counts)) FROM $DB.function_metrics WHERE function = 'f'=10" \
+  "SELECT toString((count(), sum(duration_count), sum(e2e_count))) FROM $F AND flow = 'kafka|q|c'=(2,2,6)" \
+  "SELECT sum(duration_count) FROM $DB.endpoint_metrics_lean_1h WHERE service = 'smoke'=12" \
+  "SELECT sumMap(buckets) FROM $DB.endpoint_metrics_lean_1h WHERE service = 'smoke'={-14:2,-13:4,-12:4}" \
+  "SELECT sumMap(buckets) FROM $DB.endpoint_metrics_1h WHERE instance = 'pod-a'={-14:2,-13:4,-12:4}" \
+  "SELECT sumIf(duration_count, startsWith(status_code, '5')) FROM $DB.endpoint_metrics_1h WHERE instance = 'pod-a'=10" \
+  "SELECT toString((count(), sum(calls))) FROM $DB.function_counters WHERE function = 'f' AND deployment = 'd1' AND error_type = ''=(2,2)" \
+  "SELECT toString((count(), sum(errors))) FROM $DB.function_counters WHERE function = 'f' AND error_type = 'TypeError'=(2,2)" \
+  "SELECT toString((count(), sum(duration_count))) FROM $DB.function_durations WHERE function = 'f'=(2,10)" \
+  "SELECT sumMap(buckets) FROM $DB.function_durations WHERE function = 'f'={-14:2,-13:4,-12:4}" \
+  "SELECT sumMap(buckets) FROM $DB.function_metrics_lean_1h WHERE function = 'f'={-14:2,-13:4,-12:4}" \
+  "SELECT sumMap(buckets) FROM $DB.function_metrics_1h WHERE function = 'f' AND caller = 'g'={-14:2,-13:4,-12:4}" \
+  "SELECT sum(calls) FROM $DB.function_metrics_1h WHERE function = 'f' AND flow = 'http|/x|get' AND caller = 'g' AND caller_file = 'g.ts' AND content_hash = 'h1'=2" \
+  "SELECT sum(errors) FROM $DB.function_metrics_lean_1h WHERE function = 'f'=2" \
+  "SELECT sum(errors) FROM $DB.function_metrics_1h WHERE function = 'f' AND error_type = 'TypeError'=2" \
+  "SELECT hud_attribute_count('hud.function.kind', 'method', sumMap(attribute_counts)) FROM $DB.function_metrics_lean_1h WHERE function = 'f'=10" \
+  "SELECT groupUniqArrayArrayMapMerge(1000)(attributes)['telemetry.sdk.version'] FROM $DB.endpoint_metrics_lean_1h WHERE service = 'smoke'=['1.12.5']" \
+  "SELECT arraySort(mapKeys(groupUniqArrayArrayMapMerge(1000)(attributes))) FROM $DB.function_metrics_lean_1h WHERE function = 'f'=['hud.function.kind','telemetry.sdk.version']" \
+  "SELECT length(sumMap(attribute_counts)) FROM $DB.function_metrics_1h WHERE function = 'f'=2" \
+  "SELECT hud_attribute_count('hud.function.kind', 'method', sumMap(attribute_counts)) FROM $DB.function_durations WHERE function = 'f'=10" \
   "SELECT groupUniqArrayArrayMap(1000)(attributes)['telemetry.sdk.version'] FROM $F=['1.12.5']" \
-  "SELECT countIf(duration_count = 0) FROM $DB.function_metrics_lean FINAL WHERE function = 'f'=0" \
-  "SELECT countIf(duration_count = 0) FROM $DB.function_metrics_buckets FINAL WHERE function = 'f' AND error_type = ''=0" \
-  "SELECT countIf(duration_count = 0) FROM $DB.endpoint_metrics_lean FINAL WHERE $FLOW_ROWS=0" \
-  "SELECT countIf(duration_count = 0) FROM $DB.endpoint_metrics_buckets FINAL WHERE $FLOW_ROWS=0" \
-  "SELECT max(uptime) FROM $DB.machine_metrics WHERE instance = 'pod-a' AND env = 'smoke-env' AND last_seen > 0=42" \
-  "SELECT toString((round(sum(cpu_sum) / sum(cpu_count), 3), max(cpu_max), round(sum(elu_sum) / sum(elu_count), 3), max(elu_max), max(memory_max), max(memory_limit))) FROM $DB.machine_metrics WHERE instance = 'pod-a'=(0.5,0.75,0.2,0.3,200,1000)" \
-  "SELECT toString((max(cpu_max), max(memory_max))) FROM $DB.machine_metrics_buckets WHERE instance = 'pod-a'=(0.75,200)" \
+  "SELECT countIf(duration_count = 0) FROM $DB.function_metrics_lean_1h FINAL WHERE function = 'f'=0" \
+  "SELECT countIf(duration_count = 0) FROM $DB.function_metrics_1h FINAL WHERE function = 'f' AND error_type = ''=0" \
+  "SELECT countIf(duration_count = 0) FROM $DB.endpoint_metrics_lean_1h FINAL WHERE $FLOW_ROWS=0" \
+  "SELECT countIf(duration_count = 0) FROM $DB.endpoint_metrics_1h FINAL WHERE $FLOW_ROWS=0" \
+  "SELECT max(uptime) FROM $DB.process_metrics WHERE instance = 'pod-a' AND env = 'smoke-env' AND last_seen > 0=42" \
+  "SELECT toString((count(), sum(cpu_count), sum(memory_count), sum(elu_count))) FROM $DB.process_metrics WHERE instance = 'pod-a'=(2,2,2,2)" \
+  "SELECT toString((round(sum(cpu_sum) / sum(cpu_count), 3), max(cpu_max), round(sum(elu_sum) / sum(elu_count), 3), max(elu_max), max(memory_max), max(memory_limit))) FROM $DB.process_metrics WHERE instance = 'pod-a'=(0.5,0.75,0.2,0.3,200,1000)" \
+  "SELECT toString((max(cpu_max), max(memory_max))) FROM $DB.process_metrics_1h WHERE instance = 'pod-a'=(0.75,200)" \
   "SELECT sum(Value) FROM $DB.otel_metrics_sum WHERE ServiceName = 'smoke' AND MetricName = 'app.orders'=6" \
-  "SELECT sum(calling_runs) FROM $DB.endpoint_metrics WHERE flow = 'http|/x|get' AND parent_service = 'caller' AND parent_flow = 'kafka|t|g' AND root_service = 'edge' AND root_flow = 'http|/y|post'=8" \
-  "SELECT sum(calling_runs) FROM $DB.endpoint_metrics_lean WHERE parent_service = 'caller'=8" \
-  "SELECT sum(issues) FROM $DB.endpoint_metrics_lean WHERE fingerprint = 'fp' AND caught = 'false' AND user_error = 'card declined'=2" \
-  "SELECT sum(issues) FROM $DB.endpoint_metrics_buckets WHERE instance = 'pod-a'=2" \
-  "SELECT groupArray(flow) FROM (SELECT DISTINCT flow FROM $DB.endpoints WHERE service = 'smoke' ORDER BY flow)=['','http|/x|get']" \
+  "SELECT sum(calling_runs) FROM $DB.endpoint_counters WHERE flow = 'http|/x|get' AND parent_service = 'caller' AND parent_flow = 'kafka|t|g' AND root_service = 'edge' AND root_flow = 'http|/y|post'=8" \
+  "SELECT sum(calling_runs) FROM $DB.endpoint_metrics_lean_1h WHERE parent_service = 'caller'=8" \
+  "SELECT sum(issues) FROM $DB.endpoint_metrics_lean_1h WHERE fingerprint = 'fp' AND caught = 'false' AND user_error = 'card declined' AND parent_service = '' AND parent_flow = ''=2" \
+  "SELECT sum(issues) FROM $DB.endpoint_metrics_1h WHERE instance = 'pod-a'=2" \
+  "SELECT groupArray(flow) FROM (SELECT DISTINCT flow FROM $DB.endpoints WHERE service = 'smoke' ORDER BY flow)=['','http|/x|get','kafka|q|c']" \
   "SELECT groupArray(flow || '/' || function) FROM (SELECT DISTINCT flow, function FROM $DB.functions WHERE service = 'smoke' ORDER BY ALL)=['http|/x|get/f']" \
-  "SELECT toString((count(), sum(messages), toUnixTimestamp(min(t)))) FROM $DB.endpoint_metrics WHERE service = 'smoke-delta'=(1,9,$((H + 30)))" \
-  "SELECT toString((count(), sum(calls), toUnixTimestamp(min(t)))) FROM $DB.function_metrics WHERE service = 'smoke-delta'=(1,9,$((H + 60)))" \
-  "SELECT toString((sum(messages), toUnixTimestamp(min(hour)))) FROM $DB.endpoint_metrics_lean WHERE service = 'smoke-delta'=(9,$H)" \
-  "SELECT toString((count(), sum(messages), toUnixTimestamp(min(t)))) FROM $DB.endpoint_metrics WHERE service = 'smoke-long'=(1,7,$H)"
+  "SELECT toString((count(), sum(messages), toUnixTimestamp(min(t)))) FROM $DB.endpoint_counters WHERE service = 'smoke-delta'=(1,9,$((H + 30)))" \
+  "SELECT toString((count(), sum(calls), toUnixTimestamp(min(t)))) FROM $DB.function_counters WHERE service = 'smoke-delta'=(1,9,$((H + 60)))" \
+  "SELECT toString((sum(messages), toUnixTimestamp(min(hour)))) FROM $DB.endpoint_metrics_lean_1h WHERE service = 'smoke-delta'=(9,$H)" \
+  "SELECT toString((count(), sum(messages), toUnixTimestamp(min(t)))) FROM $DB.endpoint_counters WHERE service = 'smoke-long'=(1,7,$H)"
 poll sql smoke-clickstack "SELECT count() FROM $DB.otel_logs WHERE EventName = 'hud.forensic' AND ServiceName = 'smoke'=1"
 
 echo "--- retried insert: the exporter resends a failed batch as is (plain insert, dedup through the views, as clickhouse.yaml), which counts once; another pod's equal point still counts"
@@ -268,9 +276,9 @@ for p in pod-a pod-a pod-b; do
 done
 poll sql smoke-clickstack \
   "SELECT count() FROM $DB.otel_metrics_sum WHERE ServiceName = 'smoke-retry'=2" \
-  "SELECT sum(messages) FROM $DB.endpoint_metrics WHERE service = 'smoke-retry'=10" \
-  "SELECT sum(messages) FROM $DB.endpoint_metrics_buckets WHERE service = 'smoke-retry'=10" \
-  "SELECT sum(messages) FROM $DB.endpoint_metrics_lean WHERE service = 'smoke-retry'=10"
+  "SELECT sum(messages) FROM $DB.endpoint_counters WHERE service = 'smoke-retry'=10" \
+  "SELECT sum(messages) FROM $DB.endpoint_metrics_1h WHERE service = 'smoke-retry'=10" \
+  "SELECT sum(messages) FROM $DB.endpoint_metrics_lean_1h WHERE service = 'smoke-retry'=10"
 
 echo "--- TLS: hud-migrate and the collector on the https endpoint form Cloud uses (https://host:8443, trailing slash ok for hud-migrate)"
 TLS=(-e CLICKHOUSE_TLS_INSECURE_SKIP_VERIFY=true -e HUD_CLICKHOUSE_DATABASE=$DB)
@@ -289,5 +297,5 @@ curl -sf -X POST localhost:14320/v1/logs -H 'Content-Type: application/json' -d 
 {"resourceLogs":[{"resource":$TLS_RESOURCE,"scopeLogs":[{"logRecords":[
   {"timeUnixNano":"$((BASE * 1000000000))","eventName":"hud.forensic","severityText":"INFO","body":{"stringValue":"{}"}}]}]}]}
 EOF
-poll sql smoke-clickstack-tls "SELECT sum(messages) FROM $DB.endpoint_metrics WHERE service = 'smoke-tls'=3"
+poll sql smoke-clickstack-tls "SELECT sum(messages) FROM $DB.endpoint_counters WHERE service = 'smoke-tls'=3"
 poll sql smoke-clickstack-tls "SELECT count() FROM $DB.otel_logs WHERE ServiceName = 'smoke-tls'=1"
