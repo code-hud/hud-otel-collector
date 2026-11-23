@@ -51,8 +51,8 @@
 -- counts (values sharing a bucket add up). Session and host attributes stay out, so a lean row never grows with the
 -- number of pods, and so do the function's short name and its flow's type, route and methods: they vary per call (the
 -- flow's are in its name).
--- The endpoint tables also split a flow's rows by the feature flag combination its runs set (feature_flags, last in
--- their columns and sorting keys). The SDK sends one hud.feature_flag.<key> attribute per flag, or only
+-- The endpoint tables also split a flow's rows by the feature flag combination its runs set (feature_flags, before
+-- attributes, and last in their sorting keys). The SDK sends one hud.feature_flag.<key> attribute per flag, or only
 -- hud.feature_flags.overflow when a flow has more combinations than it tracks; feature_flags is the 'key=value' pairs
 -- sorted by key and joined with ',' ('fast_path=false,new_checkout=true'), '__hud_other__' (the SDK's overflow key) on
 -- overflow, and '' without flags. These keys stay out of attributes. The SDK sends at most 16 combinations per flow, so
@@ -216,9 +216,9 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.endpoint_durations
     e2e_count UInt64, e2e_sum Float64,
     e2e_buckets Map(Int16, UInt64),
     last_seen DateTime,
+    feature_flags LowCardinality(String),
     attributes Map(String, Array(String)),
-    attribute_counts Map(UInt32, UInt64),
-    feature_flags LowCardinality(String)
+    attribute_counts Map(UInt32, UInt64)
 )
 ENGINE = MergeTree
 PARTITION BY toDate(t)
@@ -267,9 +267,9 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.endpoint_metrics_1h
     e2e_buckets SimpleAggregateFunction(sumMap, Map(Int16, UInt64)),
     messages SimpleAggregateFunction(sum, Float64), issues SimpleAggregateFunction(sum, Float64),
     calling_runs SimpleAggregateFunction(sum, Float64), last_seen SimpleAggregateFunction(max, DateTime),
+    feature_flags LowCardinality(String),
     attributes AggregateFunction(groupUniqArrayArrayMap(1000), Map(String, Array(String))),
-    attribute_counts SimpleAggregateFunction(sumMap, Map(UInt32, UInt64)),
-    feature_flags LowCardinality(String)
+    attribute_counts SimpleAggregateFunction(sumMap, Map(UInt32, UInt64))
 )
 ENGINE = AggregatingMergeTree
 PARTITION BY toDate(hour)
@@ -296,9 +296,9 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.endpoint_metrics_lean_1h
     e2e_buckets SimpleAggregateFunction(sumMap, Map(Int16, UInt64)),
     messages SimpleAggregateFunction(sum, Float64), issues SimpleAggregateFunction(sum, Float64),
     calling_runs SimpleAggregateFunction(sum, Float64), last_seen SimpleAggregateFunction(max, DateTime),
+    feature_flags LowCardinality(String),
     attributes AggregateFunction(groupUniqArrayArrayMap(1000), Map(String, Array(String))),
-    attribute_counts SimpleAggregateFunction(sumMap, Map(UInt32, UInt64)),
-    feature_flags LowCardinality(String)
+    attribute_counts SimpleAggregateFunction(sumMap, Map(UInt32, UInt64))
 )
 ENGINE = AggregatingMergeTree
 PARTITION BY toDate(hour)
