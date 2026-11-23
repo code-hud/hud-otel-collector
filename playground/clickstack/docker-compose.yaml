@@ -30,6 +30,7 @@ services:
       CLICKHOUSE_PASSWORD: Migrator-pass-1234
       HUD_CLICKHOUSE_DATABASE: ${HUD_CLICKHOUSE_DATABASE:-hud_otel}
       HUD_SCHEMA_MANAGED: ${HUD_SCHEMA_MANAGED:-true}
+      HUD_TIMESERIES_TABLE: ${HUD_TIMESERIES_TABLE:-false}
     depends_on:
       clickhouse: {condition: service_healthy}
 

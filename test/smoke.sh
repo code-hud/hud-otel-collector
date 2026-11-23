@@ -137,7 +137,7 @@ want="['endpoint_counters','endpoint_counters_mv','endpoint_durations','endpoint
 'endpoints_from_durations_mv','endpoints_from_process_mv','function_counters','function_counters_mv',\
 'function_durations','function_durations_mv','function_metrics_1h','function_metrics_1h_from_counters_mv',\
 'function_metrics_1h_from_durations_mv','function_metrics_lean_1h','function_metrics_lean_1h_from_counters_mv',\
-'function_metrics_lean_1h_from_durations_mv','functions','functions_mv','metrics','otel_logs',\
+'function_metrics_lean_1h_from_durations_mv','functions','functions_mv','otel_logs',\
 'otel_metrics_exponential_histogram','otel_metrics_gauge','otel_metrics_histogram','otel_metrics_sum',\
 'otel_metrics_summary','process_metrics','process_metrics_1h','process_metrics_1h_mv','process_metrics_mv']"
 [ "$tables" = "$want" ] || { echo "FAIL: $DB has $tables after up, want $want"; exit 1; }
