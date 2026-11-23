@@ -76,6 +76,7 @@ out freely: it only batches the inserts.
 | `endpoint_counters` | export | flow, SDK session, deployment, and per counter: queue (messages), issue fingerprint and user error (issues), status code and the flow that called it (parent) and started it (root) (`calling_runs`) |
 | `endpoint_metrics_1h` | hour | both endpoint tables |
 | `endpoint_metrics_lean_1h` | hour | the same without the session |
+| `endpoint_durations_v2`, `endpoint_counters_v2`, `endpoint_metrics_1h_v2`, `endpoint_metrics_lean_1h_v2` | as above | the same, and the feature flag combination (`feature_flags`, see Feature flags below) |
 | `process_metrics`, `process_metrics_1h` | export, hour | SDK session and its pod: last report, uptime, CPU, memory and its limit, event loop utilization |
 | `function_durations` | export | function, file, caller function (name and file), flow, content hash, deployment: duration |
 | `function_counters` | export | the same and error type: calls, errors |
@@ -129,6 +130,38 @@ that second's fine row and that hour's hourly row, so a chart is no finer than t
 The `metrics` `TimeSeries` table (`0003_timeseries.sql`) is only
 created with `HUD_TIMESERIES_TABLE=true`; nothing writes to it, and installs that already have it keep it. `playground/clickstack/` runs it end to end with HyperDX and the node SDK; the
 dashboards are in [hud-clickhouse-resources](https://github.com/code-hud/hud-clickhouse-resources).
+
+**Feature flags.** The SDK splits a flow's metrics by the feature flags its runs set (`setFeatureFlag`), one `hud.feature_flag.<key>`
+attribute per flag, or only `hud.feature_flags.overflow` past its 16 combinations per flow. The endpoint tables above
+merge combinations: their `attributes` keep each flag's values and runs, not its durations. The `_v2` endpoint tables
+(`0004_feature_flags.sql`) keep each combination as its own rows, keyed by `feature_flags`: the pairs sorted by key,
+`'fast_path=false,new_checkout=true'`, `'__hud_other__'` on overflow, `''` without flags. Their `attributes` leave
+the flags out. Durations, issues and error rate by combination:
+
+```sql
+SELECT feature_flags, sum(duration_count) AS runs, sumIf(duration_count, startsWith(status_code, '5')) AS errors,
+  sum(issues) AS issues, hud_duration_quantile(0.9, sumMap(buckets)) AS p90_s
+FROM hud_otel.endpoint_metrics_lean_1h_v2 WHERE service = 'checkout' AND hour >= now() - INTERVAL 1 DAY
+GROUP BY feature_flags ORDER BY runs DESC
+```
+
+The schema only creates (see the rules below), so the `0002` endpoint tables and views stay and keep being written:
+readers that don't group by flags need not move, and a reader moves table by table to its `_v2` once it exists
+(`system.tables`), with `feature_flags` added to its keys or summed over. The `_v2` tables start empty when
+`hud-migrate` first creates them. To read the time before that from them too, an admin can copy it once, as rows without
+flags (`feature_flags` is their last column). The fine tables' inserts fill the hourly ones up to then, and the
+older hours come from the `0002` hourly tables:
+
+```sql
+INSERT INTO hud_otel.endpoint_durations_v2 SELECT *, '' FROM hud_otel.endpoint_durations
+WHERE t < (SELECT min(t) FROM hud_otel.endpoint_durations_v2);
+INSERT INTO hud_otel.endpoint_counters_v2 SELECT *, '' FROM hud_otel.endpoint_counters
+WHERE t < (SELECT min(t) FROM hud_otel.endpoint_counters_v2);
+INSERT INTO hud_otel.endpoint_metrics_1h_v2 SELECT *, '' FROM hud_otel.endpoint_metrics_1h
+WHERE hour < (SELECT toStartOfDay(min(t)) FROM hud_otel.endpoint_durations);
+INSERT INTO hud_otel.endpoint_metrics_lean_1h_v2 SELECT *, '' FROM hud_otel.endpoint_metrics_lean_1h
+WHERE hour < (SELECT toStartOfDay(min(t)) FROM hud_otel.endpoint_durations);
+```
 
 The collector's `CLICKHOUSE_ENDPOINT` is the HTTP interface as `scheme://host:port`, e.g.
 `https://<service>.<region>.aws.clickhouse.cloud:8443` on ClickHouse Cloud. `hud-migrate` accepts the same value (an
