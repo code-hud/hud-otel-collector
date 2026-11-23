@@ -252,6 +252,32 @@ TTL t + toIntervalDay(30)
 SETTINGS ttl_only_drop_parts = 1, non_replicated_deduplication_window = 10000,
     replicated_deduplication_window = 10000;
 
+-- Both endpoint tables as one, at the fine grain, like endpoint_metrics_1h: duration rows carry '' and 0 in the
+-- counter columns and counter rows the reverse, so sum over both. calls is the runs (flows aren't sampled, so
+-- duration_count); averages stay duration_sum / duration_count. On counter rows status_code is calling_runs'.
+-- UNION ALL matches columns by position.
+CREATE VIEW IF NOT EXISTS ${DATABASE}.endpoint_metrics_union
+DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
+SELECT t, env, service, flow, flow_type, status_code, destination, deployment, instance, feature_flags,
+    method, route, end_reason,
+    '' AS fingerprint, '' AS framework_result, '' AS caught, '' AS user_error,
+    '' AS parent_service, '' AS parent_flow, '' AS parent_multiple, '' AS root_service, '' AS root_flow, '' AS root_multiple,
+    duration_count AS calls, duration_count, duration_sum, buckets,
+    e2e_count, e2e_sum, e2e_buckets,
+    toFloat64(0) AS issues, toFloat64(0) AS messages, toFloat64(0) AS calling_runs,
+    last_seen, attributes, attribute_counts
+FROM ${DATABASE}.endpoint_durations
+UNION ALL
+SELECT t, env, service, flow, flow_type, status_code, destination, deployment, instance, feature_flags,
+    '', '', '',
+    fingerprint, framework_result, caught, user_error,
+    parent_service, parent_flow, parent_multiple, root_service, root_flow, root_multiple,
+    toUInt64(0), toUInt64(0), toFloat64(0), map(),
+    toUInt64(0), toFloat64(0), map(),
+    issues, messages, calling_runs,
+    last_seen, map(), map()
+FROM ${DATABASE}.endpoint_counters;
+
 CREATE TABLE IF NOT EXISTS ${DATABASE}.endpoint_metrics_1h
 (
     hour DateTime, env LowCardinality(String), service LowCardinality(String), flow LowCardinality(String),
