@@ -6,7 +6,8 @@
 // Environment: CLICKHOUSE_ENDPOINT (a clickhouse-go DSN: tcp://, clickhouse://, http:// or https://; the
 // collector's endpoint works as is), CLICKHOUSE_USER, CLICKHOUSE_PASSWORD, CLICKHOUSE_TLS_INSECURE_SKIP_VERIFY,
 // HUD_CLICKHOUSE_DATABASE (default hud_otel, ${DATABASE} in the schema files),
-// HUD_LOGS_TTL_DAYS (default 30, only used when otel_logs is created). HUD_SCHEMA_MANAGED=false makes it exit
+// HUD_LOGS_TTL_DAYS (default 30, only used when otel_logs is created), HUD_TIMESERIES_TABLE=true to also create the
+// metrics TimeSeries table (default false). HUD_SCHEMA_MANAGED=false makes it exit
 // without connecting, for customers who run the migrations themselves.
 package main
 
@@ -131,12 +132,21 @@ func retry(f func() error) error {
 	return err
 }
 
+// The TimeSeries table is opt-in: nothing Hud ships writes to it, and the engine is a preview some servers refuse.
+func provider(db *sql.DB, schema fs.FS) (*goose.Provider, error) {
+	opts := []goose.ProviderOption{goose.WithDisableVersioning(true)}
+	if os.Getenv("HUD_TIMESERIES_TABLE") != "true" {
+		opts = append(opts, goose.WithExcludeNames([]string{"0003_timeseries.sql"}))
+	}
+	return goose.NewProvider(goose.DialectClickHouse, db, schema, opts...)
+}
+
 func up(ctx context.Context, db *sql.DB, schema fs.FS, database string) error {
 	// goose's ENVSUB reads the process environment
 	if err := os.Setenv("DATABASE", database); err != nil {
 		return err
 	}
-	p, err := goose.NewProvider(goose.DialectClickHouse, db, schema, goose.WithDisableVersioning(true))
+	p, err := provider(db, schema)
 	if err != nil {
 		return err
 	}

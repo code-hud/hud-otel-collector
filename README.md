@@ -126,8 +126,8 @@ seconds. Only deltas are summed (the
 SDK sends nothing else), except the process gauges and limits. A delta covers the SDK's export interval
 (`aggregationInterval`: 5 minutes by default, set per account) and lands whole at the interval's end (`TimeUnix`): in
 that second's fine row and that hour's hourly row, so a chart is no finer than the export interval.
-The `metrics` `TimeSeries` table of `0001_init.sql` is
-still created but nothing writes to it. `playground/clickstack/` runs it end to end with HyperDX and the node SDK; the
+The `metrics` `TimeSeries` table (`0003_timeseries.sql`) is only
+created with `HUD_TIMESERIES_TABLE=true`; nothing writes to it, and installs that already have it keep it. `playground/clickstack/` runs it end to end with HyperDX and the node SDK; the
 dashboards are in [hud-clickhouse-resources](https://github.com/code-hud/hud-clickhouse-resources).
 
 The collector's `CLICKHOUSE_ENDPOINT` is the HTTP interface as `scheme://host:port`, e.g.
@@ -143,7 +143,8 @@ Environment: `CLICKHOUSE_ENDPOINT` (`tcp://`, `http://` or `https://`), `CLICKHO
 `CLICKHOUSE_TLS_INSECURE_SKIP_VERIFY` (`true` for a self-signed certificate; the collector config reads it too),
 `HUD_CLICKHOUSE_DATABASE` (default `hud_otel`; the collector config reads the same variable, like ClickStack's
 `HYPERDX_OTEL_EXPORTER_CLICKHOUSE_DATABASE`) and `HUD_LOGS_TTL_DAYS` (default 30; only applies when `otel_logs` is
-created, later changes don't touch the existing table). With `HUD_SCHEMA_MANAGED=false` it exits without connecting, for customers who run the same SQL themselves.
+created, later changes don't touch the existing table), `HUD_TIMESERIES_TABLE` (default `false`; `true` also creates
+the `metrics` `TimeSeries` table, which needs a server that allows the `TimeSeries` engine). With `HUD_SCHEMA_MANAGED=false` it exits without connecting, for customers who run the same SQL themselves.
 
 Rules for `hud-migrate/schema/*.sql`, as in ClickStack:
 

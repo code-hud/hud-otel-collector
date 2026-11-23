@@ -88,10 +88,31 @@ func TestUp(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, table := range []string{"metrics", "otel_logs", "otel_metrics_histogram", "endpoint_durations", "endpoint_metrics_lean_1h", "endpoints"} {
+	for table, want := range map[string]uint8{"metrics": 0, "otel_logs": 1, "otel_metrics_histogram": 1, "endpoint_durations": 1, "endpoint_metrics_lean_1h": 1, "endpoints": 1} {
 		var exists uint8
-		if err := db.QueryRowContext(ctx, "EXISTS TABLE "+database+"."+table).Scan(&exists); err != nil || exists != 1 {
-			t.Errorf("%s.%s: exists=%d, err=%v", database, table, exists, err)
+		if err := db.QueryRowContext(ctx, "EXISTS TABLE "+database+"."+table).Scan(&exists); err != nil || exists != want {
+			t.Errorf("%s.%s: exists=%d, want %d, err=%v", database, table, exists, want, err)
+		}
+	}
+}
+
+func TestTimeSeriesIsOptIn(t *testing.T) {
+	schema, _ := fs.Sub(schemaFS, "schema")
+	db := clickhouse.OpenDB(&clickhouse.Options{})
+	defer db.Close()
+	for env, want := range map[string]bool{"": false, "false": false, "true": true} {
+		t.Setenv("HUD_TIMESERIES_TABLE", env)
+		p, err := provider(db, schema)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := false
+		for _, s := range p.ListSources() {
+			b, _ := fs.ReadFile(schema, s.Path)
+			got = got || strings.Contains(string(b), "ENGINE = TimeSeries")
+		}
+		if got != want {
+			t.Errorf("HUD_TIMESERIES_TABLE=%q: creates the TimeSeries table %v, want %v", env, got, want)
 		}
 	}
 }
