@@ -1,0 +1,47 @@
+# Layered on test/clickhouse.yaml (--config clickhouse.yaml --config timeseries.yaml): the same metrics also go, through
+# ClickHouse's Prometheus remote-write handler (test/clickhouse-prometheus.xml), into the metrics TimeSeries table that
+# hud-migrate creates with HUD_TIMESERIES_TABLE=true, read with PromQL. Same database, endpoint and user as the SQL
+# tables; INSERT on the database covers the table's inner tables.
+# Unlike the SQL pipeline this one keeps state: delta_to_cumulative sums each pod's deltas, so a pod's metrics must keep
+# reaching the same replica (one replica, or routing by pod), or replicas write conflicting samples of one series.
+extensions:
+  basicauth/clickhouse:
+    client_auth:
+      username: ${env:CLICKHOUSE_USER}
+      password: ${env:CLICKHOUSE_PASSWORD}
+
+processors:
+  # The TimeSeries table drops native histograms, which the exporter makes of exponential ones, so they become classic
+  # le buckets first. The SDK's durations are scale-2 buckets (2^(k/4), 2^((k+1)/4)] s, each inside one power-of-2
+  # bucket, so these bounds (2^-14 s to 64 s) lose nothing but the resolution within a factor of 2. midpoint, since
+  # upper puts a count whose bound is a power of 2 (k divisible by 4) one bucket too high.
+  # ponytail: fixed bounds, 22 le series per histogram; durations under 61 µs share the first bucket, over 64 s +Inf.
+  transform/histograms:
+    metric_statements:
+      - context: metric
+        statements:
+          - convert_exponential_histogram_to_histogram("midpoint", [0.00006103515625, 0.0001220703125, 0.000244140625, 0.00048828125, 0.0009765625, 0.001953125, 0.00390625, 0.0078125, 0.015625, 0.03125, 0.0625, 0.125, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0])
+  # Remote write needs cumulative series.
+  delta_to_cumulative:
+
+exporters:
+  prometheus_remote_write:
+    endpoint: ${env:CLICKHOUSE_ENDPOINT}/prometheus/api/v1/write?database=${env:HUD_CLICKHOUSE_DATABASE:-hud_otel}&table=metrics
+    auth:
+      authenticator: basicauth/clickhouse
+    # Every resource attribute (environment, deployment, ...) becomes a label, as the SQL tables keep them; service.*
+    # already are job and instance. So target_info would add nothing.
+    resource_constant_labels:
+      excluded: [service.name, service.namespace, service.instance.id]
+    target_info:
+      enabled: false
+    tls:
+      insecure_skip_verify: ${env:CLICKHOUSE_TLS_INSECURE_SKIP_VERIFY:-false}
+
+service:
+  extensions: [health_check, basicauth/clickhouse]
+  pipelines:
+    metrics/timeseries:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, transform/histograms, delta_to_cumulative]
+      exporters: [prometheus_remote_write]
