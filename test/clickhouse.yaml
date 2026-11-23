@@ -1,0 +1,65 @@
+# ClickHouse export: the SDK's metrics go through the clickhouse exporter into its default otel_metrics_* tables, where
+# materialized views sum the deltas into the endpoint, machine and function tables (hud-migrate/schema/0002_sql.sql),
+# and logs go into otel_logs, all in HUD_CLICKHOUSE_DATABASE (default hud_otel). hud-migrate creates the database and
+# tables; CLICKHOUSE_USER only needs INSERT on it.
+# The collector keeps no state: pods are not merged here, every replica inserts the deltas it receives and ClickHouse
+# sums them, so replicas can scale freely.
+# CLICKHOUSE_ENDPOINT is scheme://host:port (https://<service>:8443 on Cloud). hud-migrate accepts the same value.
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 20
+  # Every SDK pod exports once a minute: batching keeps ClickHouse at a few large inserts per replica and table, for
+  # metrics and logs alike.
+  batch:
+    timeout: 5s
+    send_batch_size: 10000
+  # The process memory sums become gauges, so they arrive with the other process gauges in one insert and fill the
+  # same process_metrics row (hud-migrate/schema/0002_sql.sql). Without it process_metrics has no memory: its view
+  # reads only otel_metrics_gauge. Lossless because the SDK sends both as cumulative non-monotonic sums (current bytes).
+  transform/process_memory:
+    metric_statements:
+      - context: metric
+        statements:
+          - convert_sum_to_gauge() where metric.name == "process.memory.usage" or metric.name == "hud.process.memory.limit"
+
+exporters:
+  clickhouse:
+    endpoint: ${env:CLICKHOUSE_ENDPOINT}
+    username: ${env:CLICKHOUSE_USER}
+    password: ${env:CLICKHOUSE_PASSWORD}
+    database: ${env:HUD_CLICKHOUSE_DATABASE:-hud_otel}
+    create_schema: false
+    logs_table_name: otel_logs
+    # A retried batch must be dropped as a duplicate by every table and view (hud-migrate/schema/0002_sql.sql): plain
+    # inserts, since async ones (the exporter's default) are not deduplicated, and dedup through the views.
+    async_insert: false
+    connection_params:
+      deduplicate_blocks_in_dependent_materialized_views: "1"
+    tls:
+      insecure_skip_verify: ${env:CLICKHOUSE_TLS_INSECURE_SKIP_VERIFY:-false}
+
+service:
+  extensions: [health_check]
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, transform/process_memory, batch]
+      exporters: [clickhouse]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [clickhouse]

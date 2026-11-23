@@ -1,8 +1,7 @@
 # ClickStack playground
 
-ClickHouse with the `TimeSeries` engine and the Prometheus API, the customer setup script (`setup.sql`, run by `setup.sh`), `hud-migrate`
-as an init container, the collector on `test/clickstack.yaml`, HyperDX, and the node SDK's sample app against its
-fake Hud backend.
+ClickHouse with the customer setup script (`setup.sql`, run by `setup.sh`), `hud-migrate` as an init container, the
+collector on `test/clickhouse.yaml`, HyperDX, and the node SDK's sample app against its fake Hud backend.
 
 ## Run
 
@@ -16,16 +15,19 @@ docker compose up -d                          # hud-migrate runs, exits 0, then 
                                               # HUD_ENABLE_INVESTIGATION=true; Ctrl+C stops it
 ```
 
-The collector exports every 10 s (`EXPORT_INTERVAL`), so series show up within a minute; investigations appear as
-the SDK sends them (first error, baselines).
+The SDK exports every minute and the collector inserts every 5 s, so the tables fill within a minute or two;
+investigations appear as the SDK sends them (first error, baselines).
 
 ## Look
 
-PromQL, as `hud_backend` (the read-only user Hud's backend gets):
+Metrics, as `hud_backend` (the read-only user Hud's backend gets): runs, P90 and errors per flow over the last hour,
+from the endpoint table:
 
 ```sh
-curl -s -u hud_backend:Backend-pass-1234 -G localhost:8123/prometheus/api/v1/query --data-urlencode table=hud_otel.metrics \
-  --data-urlencode 'query=histogram_quantile(0.9, sum by (code_flow_name, le) (rate(code_flow_duration_seconds_bucket[2m])))'
+curl -s -u hud_backend:Backend-pass-1234 localhost:8123 --data-binary "
+  SELECT flow, sum(duration_count) AS runs, sumIf(duration_count, startsWith(status_code, '5')) AS errors_5xx,
+    round(1e3 * hud_duration_quantile(0.9, sumMap(buckets)), 1) AS p90_ms
+  FROM hud_otel.endpoint_durations WHERE t >= now() - INTERVAL 1 HOUR GROUP BY flow FORMAT PrettyCompact"
 ```
 
 Logs:
@@ -36,9 +38,10 @@ curl -s -u hud_backend:Backend-pass-1234 localhost:8123 \
 ```
 
 HyperDX: open http://localhost:8080 and create an account (the first one provisions the `Hud ClickHouse` connection,
-as `hud_backend`, and the sources `Hud investigations` (log, `hud_otel.otel_logs`) and `Hud metrics` (PromQL,
-`hud_otel.metrics`)). Search the investigations; for metrics add a dashboard tile on the `Hud metrics` source with a PromQL
-query like the one above.
+as `hud_backend`, and the sources `Hud investigations` (log, `hud_otel.otel_logs`), `Hud endpoints` and
+`Hud functions` (log, `hud_otel.endpoints` and `hud_otel.functions`, what the dashboards' selectors read)). Search the investigations; for metrics import the Hud
+dashboards ([hud-clickhouse-resources](https://github.com/code-hud/hud-clickhouse-resources)) with a personal API key
+from Team Settings, or add a SQL tile with a query like the one above.
 
 The database is `hud_otel` unless you set `HUD_CLICKHOUSE_DATABASE` (a plain identifier) for `docker compose up`;
 ClickHouse's setup, `hud-migrate`, the collector and HyperDX's sources all follow it. Use the same name in the queries
