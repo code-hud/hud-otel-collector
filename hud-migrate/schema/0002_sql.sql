@@ -230,7 +230,7 @@ SETTINGS ttl_only_drop_parts = 1, non_replicated_deduplication_window = 10000,
     replicated_deduplication_window = 10000;
 
 -- A flow's counters, each by its own columns, '' in the others' rows: messages by destination, issues by fingerprint,
--- framework result, caught and user error, calling_runs (runs by the flow that called it (parent) and started it
+-- framework result, caught and user error, runs_by_caller (runs by the flow that called it (parent) and started it
 -- (root; multiple: the run had more than one)) by status code, parent and root.
 CREATE TABLE IF NOT EXISTS ${DATABASE}.endpoint_counters
 (
@@ -240,7 +240,7 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.endpoint_counters
     caught LowCardinality(String), user_error String, parent_service LowCardinality(String),
     parent_flow LowCardinality(String), parent_multiple LowCardinality(String), root_service LowCardinality(String),
     root_flow LowCardinality(String), root_multiple LowCardinality(String), instance LowCardinality(String),
-    messages Float64, issues Float64, calling_runs Float64, last_seen DateTime,
+    messages Float64, issues Float64, runs_by_caller Float64, last_seen DateTime,
     feature_flags LowCardinality(String)
 )
 ENGINE = MergeTree
@@ -254,7 +254,7 @@ SETTINGS ttl_only_drop_parts = 1, non_replicated_deduplication_window = 10000,
 
 -- Both endpoint tables as one, at the fine grain, like endpoint_metrics_1h: duration rows carry '' and 0 in the
 -- counter columns and counter rows the reverse, so sum over both. calls is the runs (flows aren't sampled, so
--- duration_count); averages stay duration_sum / duration_count. On counter rows status_code is calling_runs'.
+-- duration_count); averages stay duration_sum / duration_count. On counter rows status_code is runs_by_caller's.
 -- UNION ALL matches columns by position.
 CREATE VIEW IF NOT EXISTS ${DATABASE}.endpoint_metrics_union
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
@@ -264,7 +264,7 @@ SELECT t, env, service, flow, flow_type, status_code, destination, deployment, i
     '' AS parent_service, '' AS parent_flow, '' AS parent_multiple, '' AS root_service, '' AS root_flow, '' AS root_multiple,
     duration_count AS calls, duration_count, duration_sum, buckets,
     e2e_count, e2e_sum, e2e_buckets,
-    toFloat64(0) AS issues, toFloat64(0) AS messages, toFloat64(0) AS calling_runs,
+    toFloat64(0) AS issues, toFloat64(0) AS messages, toFloat64(0) AS runs_by_caller,
     last_seen, attributes, attribute_counts
 FROM ${DATABASE}.endpoint_durations
 UNION ALL
@@ -274,7 +274,7 @@ SELECT t, env, service, flow, flow_type, status_code, destination, deployment, i
     parent_service, parent_flow, parent_multiple, root_service, root_flow, root_multiple,
     toUInt64(0), toUInt64(0), toFloat64(0), map(),
     toUInt64(0), toFloat64(0), map(),
-    issues, messages, calling_runs,
+    issues, messages, runs_by_caller,
     last_seen, map(), map()
 FROM ${DATABASE}.endpoint_counters;
 
@@ -292,7 +292,7 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.endpoint_metrics_1h
     e2e_count SimpleAggregateFunction(sum, UInt64), e2e_sum SimpleAggregateFunction(sum, Float64),
     e2e_buckets SimpleAggregateFunction(sumMap, Map(Int16, UInt64)),
     messages SimpleAggregateFunction(sum, Float64), issues SimpleAggregateFunction(sum, Float64),
-    calling_runs SimpleAggregateFunction(sum, Float64), last_seen SimpleAggregateFunction(max, DateTime),
+    runs_by_caller SimpleAggregateFunction(sum, Float64), last_seen SimpleAggregateFunction(max, DateTime),
     feature_flags LowCardinality(String),
     attributes AggregateFunction(groupUniqArrayArrayMap(1000), Map(String, Array(String))),
     attribute_counts SimpleAggregateFunction(sumMap, Map(UInt32, UInt64))
@@ -321,7 +321,7 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.endpoint_metrics_lean_1h
     e2e_count SimpleAggregateFunction(sum, UInt64), e2e_sum SimpleAggregateFunction(sum, Float64),
     e2e_buckets SimpleAggregateFunction(sumMap, Map(Int16, UInt64)),
     messages SimpleAggregateFunction(sum, Float64), issues SimpleAggregateFunction(sum, Float64),
-    calling_runs SimpleAggregateFunction(sum, Float64), last_seen SimpleAggregateFunction(max, DateTime),
+    runs_by_caller SimpleAggregateFunction(sum, Float64), last_seen SimpleAggregateFunction(max, DateTime),
     feature_flags LowCardinality(String),
     attributes AggregateFunction(groupUniqArrayArrayMap(1000), Map(String, Array(String))),
     attribute_counts SimpleAggregateFunction(sumMap, Map(UInt32, UInt64))
@@ -525,7 +525,7 @@ SELECT toDateTime(TimeUnix) AS t,
         arrayStringConcat(arraySort(arrayMap((k, v) -> concat(substring(k, 18), '=', v), mapKeys(flags), mapValues(flags))),
         ',')) AS feature_flags,
     sumIf(Value, MetricName = 'hud.flow.messages') AS messages, sumIf(Value, MetricName = 'hud.flow.issues') AS issues,
-    sumIf(Value, MetricName = 'hud.flow.calling_flows') AS calling_runs, max(TimeUnix) AS last_seen
+    sumIf(Value, MetricName = 'hud.flow.calling_flows') AS runs_by_caller, max(TimeUnix) AS last_seen
 FROM ${DATABASE}.otel_metrics_sum
 WHERE MetricName IN ('hud.flow.messages', 'hud.flow.issues', 'hud.flow.calling_flows') AND AggregationTemporality = 1
 GROUP BY t, env, service, flow, flow_type, status_code, destination, deployment, fingerprint, framework_result, caught,
@@ -640,7 +640,7 @@ DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
 SELECT toStartOfHour(t) AS hour, env, service, flow, flow_type, status_code, destination, deployment, fingerprint,
     framework_result, caught, user_error, parent_service, parent_flow, parent_multiple, root_service, root_flow,
     root_multiple, instance, feature_flags,
-    sum(messages) AS messages, sum(issues) AS issues, sum(calling_runs) AS calling_runs, max(last_seen) AS last_seen
+    sum(messages) AS messages, sum(issues) AS issues, sum(runs_by_caller) AS runs_by_caller, max(last_seen) AS last_seen
 FROM ${DATABASE}.endpoint_counters
 GROUP BY hour, env, service, flow, flow_type, status_code, destination, deployment, fingerprint, framework_result, caught,
     user_error, parent_service, parent_flow, parent_multiple, root_service, root_flow, root_multiple, instance, feature_flags;
@@ -650,7 +650,7 @@ DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
 SELECT toStartOfHour(t) AS hour, env, service, flow, flow_type, status_code, destination, deployment, fingerprint,
     framework_result, caught, user_error, parent_service, parent_flow, parent_multiple, root_service, root_flow,
     root_multiple, feature_flags,
-    sum(messages) AS messages, sum(issues) AS issues, sum(calling_runs) AS calling_runs, max(last_seen) AS last_seen
+    sum(messages) AS messages, sum(issues) AS issues, sum(runs_by_caller) AS runs_by_caller, max(last_seen) AS last_seen
 FROM ${DATABASE}.endpoint_counters
 GROUP BY hour, env, service, flow, flow_type, status_code, destination, deployment, fingerprint, framework_result, caught,
     user_error, parent_service, parent_flow, parent_multiple, root_service, root_flow, root_multiple, feature_flags;
