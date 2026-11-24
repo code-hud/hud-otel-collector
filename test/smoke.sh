@@ -172,10 +172,11 @@ FUNCTION='"attributes":[{"key":"code.function.name","value":{"stringValue":"f"}}
   {"key":"hud.function.content_hash","value":{"stringValue":"h1"}},
   {"key":"hud.function.kind","value":{"stringValue":"method"}}]'
 FLOW='"attributes":[{"key":"code.flow.name","value":{"stringValue":"http|/x|get"}},{"key":"code.flow.type","value":{"stringValue":"http"}},{"key":"http.response.status_code","value":{"intValue":"500"}}]'
-KAFKA='"attributes":[{"key":"code.flow.name","value":{"stringValue":"kafka|q|c"}}]'
+KAFKA='"attributes":[{"key":"code.flow.name","value":{"stringValue":"kafka|q|c"}},{"key":"messaging.destination.name","value":{"stringValue":"q"}}]'
 CALLER='"attributes":[{"key":"code.flow.name","value":{"stringValue":"http|/x|get"}},{"key":"hud.parent.service.name","value":{"stringValue":"caller"}},
   {"key":"hud.parent.flow.name","value":{"stringValue":"kafka|t|g"}},{"key":"hud.root.service.name","value":{"stringValue":"edge"}},{"key":"hud.root.flow.name","value":{"stringValue":"http|/y|post"}}]'
-ISSUE='"attributes":[{"key":"code.flow.name","value":{"stringValue":"http|/x|get"}},{"key":"issue.fingerprint","value":{"stringValue":"fp"}},
+ISSUE='"attributes":[{"key":"code.flow.name","value":{"stringValue":"http|/x|get"}},{"key":"http.response.status_code","value":{"intValue":"404"}},
+  {"key":"issue.fingerprint","value":{"stringValue":"fp"}},
   {"key":"hud.issue.caught","value":{"boolValue":false}},{"key":"hud.issue.user_error","value":{"stringValue":"card declined"}},
   {"key":"hud.parent.service.name","value":{"stringValue":"caller"}},{"key":"hud.parent.flow.name","value":{"stringValue":"kafka|t|g"}}]'
 FUNCTION_ERROR="${FUNCTION%]}"',{"key":"error.type","value":{"stringValue":"TypeError"}}]'
@@ -198,7 +199,8 @@ for r in 1 2; do
   {"name":"app.orders","sum":{"aggregationTemporality":1,"isMonotonic":true,"dataPoints":[{"asInt":"3","startTimeUnixNano":"$start","timeUnixNano":"$end"}]}},
   {"name":"code.function.errors","sum":{"aggregationTemporality":1,"isMonotonic":true,"dataPoints":[{$FUNCTION_ERROR,"asInt":"1","startTimeUnixNano":"$start","timeUnixNano":"$end"}]}},
   {"name":"hud.flow.calling_flows","sum":{"aggregationTemporality":1,"isMonotonic":true,"dataPoints":[{$CALLER,"asInt":"4","startTimeUnixNano":"$start","timeUnixNano":"$end"}]}},
-  {"name":"hud.flow.issues","sum":{"aggregationTemporality":1,"isMonotonic":true,"dataPoints":[{$ISSUE,"asInt":"1","startTimeUnixNano":"$start","timeUnixNano":"$end"}]}},
+  {"name":"hud.flow.issues","sum":{"aggregationTemporality":1,"isMonotonic":true,"dataPoints":[{$ISSUE,"asInt":"1","startTimeUnixNano":"$start","timeUnixNano":"$end"},
+    {${KAFKA%]},{"key":"issue.fingerprint","value":{"stringValue":"fp-q"}}],"asInt":"1","startTimeUnixNano":"$start","timeUnixNano":"$end"}]}},
   {"name":"code.function.calls","sum":{"aggregationTemporality":1,"isMonotonic":true,"dataPoints":[{$FUNCTION,"asInt":"1","startTimeUnixNano":"$start","timeUnixNano":"$end"}]}},
   {"name":"code.function.call.duration","unit":"s","exponentialHistogram":{"aggregationTemporality":1,"dataPoints":[{$FUNCTION,"startTimeUnixNano":"$start","timeUnixNano":"$end",
     "count":"5","sum":0.55,"scale":2,"zeroCount":"0","positive":{"offset":-14,"bucketCounts":["1","2","2"]}}]}}]}]}]}
@@ -263,9 +265,10 @@ poll sql smoke-clickstack \
   "SELECT sum(Value) FROM $DB.otel_metrics_sum WHERE ServiceName = 'smoke' AND MetricName = 'app.orders'=6" \
   "SELECT sum(runs_by_caller) FROM $DB.endpoint_counters WHERE flow = 'http|/x|get' AND parent_service = 'caller' AND parent_flow = 'kafka|t|g' AND root_service = 'edge' AND root_flow = 'http|/y|post'=8" \
   "SELECT sum(runs_by_caller) FROM $DB.endpoint_metrics_lean_1h WHERE parent_service = 'caller'=8" \
-  "SELECT sum(issues) FROM $DB.endpoint_metrics_lean_1h WHERE fingerprint = 'fp' AND caught = 'false' AND user_error = 'card declined' AND parent_service = '' AND parent_flow = ''=2" \
-  "SELECT sum(issues) FROM $DB.endpoint_metrics_1h WHERE instance = 'pod-a'=2" \
-  "SELECT toString((sum(calls), sum(duration_count), sumIf(calls, startsWith(status_code, '5')), sumIf(issues, fingerprint = 'fp'), sum(runs_by_caller), sumMap(buckets))) FROM $DB.endpoint_metrics_union WHERE service = 'smoke' AND flow = 'http|/x|get'=(10,10,10,2,8,{-14:2,-13:4,-12:4})" \
+  "SELECT sum(issues) FROM $DB.endpoint_metrics_lean_1h WHERE fingerprint = 'fp' AND caught = 'false' AND user_error = 'card declined' AND parent_service = '' AND parent_flow = '' AND status_code = '404'=2" \
+  "SELECT sum(issues) FROM $DB.endpoint_metrics_1h WHERE instance = 'pod-a'=4" \
+  "SELECT toString((sum(calls), sum(duration_count), sumIf(calls, startsWith(status_code, '5')), sumIf(issues, fingerprint = 'fp' AND status_code = '404'), sum(runs_by_caller), sumMap(buckets))) FROM $DB.endpoint_metrics_union WHERE service = 'smoke' AND flow = 'http|/x|get'=(10,10,10,2,8,{-14:2,-13:4,-12:4})" \
+  "SELECT toString((sum(calls), sum(issues))) FROM $DB.endpoint_metrics_union WHERE service = 'smoke' AND flow = 'kafka|q|c' AND destination = 'q'=(2,2)" \
   "SELECT groupArray(flow) FROM (SELECT DISTINCT flow FROM $DB.endpoints WHERE service = 'smoke' ORDER BY flow)=['','http|/x|get','kafka|q|c']" \
   "SELECT groupArray(flow || '/' || function) FROM (SELECT DISTINCT flow, function FROM $DB.functions WHERE service = 'smoke' ORDER BY ALL)=['http|/x|get/f']" \
   "SELECT toString((count(), sum(messages), toUnixTimestamp(min(t)))) FROM $DB.endpoint_counters WHERE service = 'smoke-delta'=(1,9,$((H + 30)))" \

@@ -74,7 +74,7 @@ out freely: it only batches the inserts.
 | Tables | Grain | One row per (and what it sums) |
 | --- | --- | --- |
 | `endpoint_durations` | export | flow, SDK session (`service.instance.id`), deployment, status code, method, route, end reason, queue and feature flag combination: runs, duration, queue latency (e2e) |
-| `endpoint_counters` | export | flow, SDK session, deployment, and per counter: queue (messages), issue fingerprint and user error (issues), status code and the flow that called it (parent) and started it (root) (`runs_by_caller`); and feature flag combination |
+| `endpoint_counters` | export | flow, SDK session, deployment, status code, queue, and per counter: issue fingerprint and user error (issues), the flow that called it (parent) and started it (root) (`runs_by_caller`); and feature flag combination |
 | `endpoint_metrics_1h` | hour | both endpoint tables |
 | `endpoint_metrics_lean_1h` | hour | the same without the session |
 | `process_metrics`, `process_metrics_1h` | export, hour | SDK session and its pod: last report, uptime, CPU, memory and its limit, event loop utilization |
