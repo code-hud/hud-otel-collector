@@ -58,7 +58,8 @@ make build   # OCB generates and compiles _build/hud-otelcol (linux, Docker host
 make image   # hud-otelcol:dev
 make smoke   # five fake pods send deltas concurrently; expects one merged Prometheus series with the summed total,
              # then runs hud-migrate and test/clickhouse.yaml against ClickHouse and checks the SQL tables and otel_logs
-             # (database hud_otel_smoke), then both with test/timeseries.yaml: the TimeSeries table, read with PromQL
+             # (database hud_otel_smoke), then both with test/timeseries.yaml: the TimeSeries table in hud_otel_smoke_promql,
+             # read with PromQL
 ```
 
 ## ClickHouse
@@ -130,7 +131,8 @@ SDK sends nothing else), except the process gauges and limits. A delta covers th
 (`aggregationInterval`: 5 minutes by default, set per account) and lands whole at the interval's end (`TimeUnix`): in
 that second's fine row and that hour's hourly row, so a chart is no finer than the export interval.
 The `metrics` `TimeSeries` table (`0003_timeseries.sql`) is only
-created with `HUD_TIMESERIES_TABLE=true`, and installs that already have it keep it. `test/timeseries.yaml`, layered on
+created with `HUD_TIMESERIES_TABLE=true`, in its own database: the SQL tables' name with suffix `_promql`
+(`hud_otel_promql`), which `hud-migrate` creates too. `test/timeseries.yaml`, layered on
 `test/clickhouse.yaml` (`--config clickhouse.yaml --config timeseries.yaml`), also writes the metrics into it through
 ClickHouse's Prometheus remote-write endpoint, for PromQL (`/prometheus/api/v1/query`): deltas made cumulative, and the
 exponential histograms as classic `le` buckets on powers of 2 (the table drops native histograms). That pipeline keeps
@@ -153,13 +155,13 @@ Environment: `CLICKHOUSE_ENDPOINT` (`tcp://`, `http://` or `https://`), `CLICKHO
 `HUD_CLICKHOUSE_DATABASE` (default `hud_otel`; the collector config reads the same variable, like ClickStack's
 `HYPERDX_OTEL_EXPORTER_CLICKHOUSE_DATABASE`) and `HUD_LOGS_TTL_DAYS` (default 30; only applies when `otel_logs` is
 created, later changes don't touch the existing table), `HUD_TIMESERIES_TABLE` (default `false`; `true` also creates
-the `metrics` `TimeSeries` table, which needs a server that allows the `TimeSeries` engine). With `HUD_SCHEMA_MANAGED=false` it exits without connecting, for customers who run the same SQL themselves.
+the `<database>_promql` database and its `metrics` `TimeSeries` table, which needs a server that allows the `TimeSeries` engine). With `HUD_SCHEMA_MANAGED=false` it exits without connecting, for customers who run the same SQL themselves.
 
 Rules for `hud-migrate/schema/*.sql`, as in ClickStack:
 
 - The customer's admin setup (`playground/clickstack/setup.sql`) grants on the same database name: replace its
   `${HUD_CLICKHOUSE_DATABASE}` placeholder, or run `setup.sh`, which validates the name and substitutes it. The grants
-  stay scoped to that one database; with another name, `hud-migrate` is denied.
+  stay scoped to that database and its `_promql` sibling; with another name, `hud-migrate` is denied.
 - **Create only.** Statements are `CREATE ... IF NOT EXISTS` (database, tables, views) or `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`; never
   `CREATE OR REPLACE`, `MODIFY`, `RENAME` or `DROP`. Changing an existing object means a new object under a new name.
   `TestSchemaIsCreateOnly` (run by `make smoke`) fails on anything else, and the migrator's grants (`CREATE

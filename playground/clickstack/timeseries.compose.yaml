@@ -1,4 +1,4 @@
-# Dual mode: the metrics also go into the metrics TimeSeries table, read with PromQL (test/timeseries.yaml).
+# Dual mode: the metrics also go into the metrics TimeSeries table of <database>_promql, read with PromQL (test/timeseries.yaml).
 # docker compose -f docker-compose.yaml -f timeseries.compose.yaml up -d
 services:
   clickhouse:
