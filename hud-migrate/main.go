@@ -7,7 +7,8 @@
 // collector's endpoint works as is), CLICKHOUSE_USER, CLICKHOUSE_PASSWORD, CLICKHOUSE_TLS_INSECURE_SKIP_VERIFY,
 // HUD_CLICKHOUSE_DATABASE (default hud_otel, ${DATABASE} in the schema files),
 // HUD_LOGS_TTL_DAYS (default 30, only used when otel_logs is created), HUD_TIMESERIES_TABLE=true to also create the
-// metrics TimeSeries table, in its own database ${DATABASE}_promql (default false). HUD_SCHEMA_MANAGED=false makes it exit
+// metrics TimeSeries table, in its own database ${DATABASE}_promql (default false), HUD_COLLECTOR_TELEMETRY=false to skip
+// the collector's self-telemetry database ${DATABASE}_collector (default true). HUD_SCHEMA_MANAGED=false makes it exit
 // without connecting, for customers who run the migrations themselves.
 package main
 
@@ -133,12 +134,17 @@ func retry(f func() error) error {
 }
 
 // The TimeSeries table is opt-in: nothing Hud ships writes to it, and the engine is a preview some servers refuse.
+// The collector's self-telemetry database is opt-out, with the same switch that turns its pipeline off.
 func provider(db *sql.DB, schema fs.FS) (*goose.Provider, error) {
-	opts := []goose.ProviderOption{goose.WithDisableVersioning(true)}
+	var exclude []string
 	if os.Getenv("HUD_TIMESERIES_TABLE") != "true" {
-		opts = append(opts, goose.WithExcludeNames([]string{"0003_timeseries.sql"}))
+		exclude = append(exclude, "0003_timeseries.sql")
 	}
-	return goose.NewProvider(goose.DialectClickHouse, db, schema, opts...)
+	if os.Getenv("HUD_COLLECTOR_TELEMETRY") == "false" {
+		exclude = append(exclude, "0004_collector.sql")
+	}
+	return goose.NewProvider(goose.DialectClickHouse, db, schema,
+		goose.WithDisableVersioning(true), goose.WithExcludeNames(exclude))
 }
 
 func up(ctx context.Context, db *sql.DB, schema fs.FS, database string) error {
