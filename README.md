@@ -72,8 +72,8 @@ out freely: it only batches the inserts.
 
 | Tables | Grain | One row per (and what it sums) |
 | --- | --- | --- |
-| `endpoint_durations` | export | flow, SDK session (`service.instance.id`), deployment, status code, method, route, end reason and queue: runs, duration, queue latency (e2e) |
-| `endpoint_counters` | export | flow, SDK session, deployment, and per counter: queue (messages), issue fingerprint and user error (issues), status code and the flow that called it (parent) and started it (root) (`calling_runs`) |
+| `endpoint_durations` | export | flow, SDK session (`service.instance.id`), deployment, status code, method, route, end reason, queue and feature flag combination: runs, duration, queue latency (e2e) |
+| `endpoint_counters` | export | flow, SDK session, deployment, and per counter: queue (messages), issue fingerprint and user error (issues), status code and the flow that called it (parent) and started it (root) (`runs_by_caller`); and feature flag combination |
 | `endpoint_metrics_1h` | hour | both endpoint tables |
 | `endpoint_metrics_lean_1h` | hour | the same without the session |
 | `process_metrics`, `process_metrics_1h` | export, hour | SDK session and its pod: last report, uptime, CPU, memory and its limit, event loop utilization |
@@ -105,7 +105,10 @@ migration. `attributes` holds up to
 `sipHash64('attribute=value') % 100000`; `hud_attribute_count(attribute, value, counts)` (created by the admin's
 `setup.sql`, since functions are server-wide) reads one. A row holds at most 100000 counts; values that share a bucket
 add up. Session and host attributes are left out, and so are a function's short name and its flow's type, route and
-methods (the flow's are in its name). Every listed value with its runs:
+methods (the flow's are in its name). The endpoint tables' `feature_flags` is the combination of feature flags a
+flow's runs set (the SDK's `hud.feature_flag.<key>` attributes): the pairs sorted by key, `'fast_path=false,new_checkout=true'`,
+`'__hud_other__'` past the SDK's 16 combinations per flow, `''` without flags; these attributes stay out of `attributes`.
+Every listed value with its runs:
 
 ```sql
 SELECT k AS attribute, v AS value, hud_attribute_count(k, v, counts) AS runs

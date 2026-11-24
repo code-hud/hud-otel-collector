@@ -3,7 +3,8 @@
 # into one Prometheus series per deployment holding its sum; flow and process metrics must stay one series per pod.
 # Then the ClickHouse path: hud-migrate creates the schema, and deltas (with a calling flow, an issue and function
 # errors), an exponential histogram, process gauges and a log sent through test/clickhouse.yaml must come out of the SQL
-# tables and otel_logs exactly, a metric no view reads must stay in otel_metrics_*, and a retried insert must count once.
+# tables and otel_logs exactly, a metric no view reads must stay in otel_metrics_*, a flow's feature flag combinations
+# must stay separate rows in the endpoint tables, and a retried insert must count once.
 # Last, test/timeseries.yaml on top: the same metrics also in the TimeSeries table, histograms as le buckets in PromQL.
 set -euo pipefail
 
@@ -138,7 +139,7 @@ tables=$(curl -s -u hud_backend:Backend-pass-1234 localhost:18123 \
   --data-binary "SELECT groupArray(name) FROM (SELECT name FROM system.tables WHERE database = '$DB' AND name NOT LIKE '.inner%' ORDER BY name)")
 want="['endpoint_counters','endpoint_counters_mv','endpoint_durations','endpoint_durations_mv','endpoint_metrics_1h',\
 'endpoint_metrics_1h_from_counters_mv','endpoint_metrics_1h_from_durations_mv','endpoint_metrics_lean_1h',\
-'endpoint_metrics_lean_1h_from_counters_mv','endpoint_metrics_lean_1h_from_durations_mv','endpoints',\
+'endpoint_metrics_lean_1h_from_counters_mv','endpoint_metrics_lean_1h_from_durations_mv','endpoint_metrics_union','endpoints',\
 'endpoints_from_durations_mv','endpoints_from_process_mv','function_counters','function_counters_mv',\
 'function_durations','function_durations_mv','function_metrics_1h','function_metrics_1h_from_counters_mv',\
 'function_metrics_1h_from_durations_mv','function_metrics_lean_1h','function_metrics_lean_1h_from_counters_mv',\
@@ -260,10 +261,11 @@ poll sql smoke-clickstack \
   "SELECT toString((round(sum(cpu_sum) / sum(cpu_count), 3), max(cpu_max), round(sum(elu_sum) / sum(elu_count), 3), max(elu_max), max(memory_max), max(memory_limit))) FROM $DB.process_metrics WHERE instance = 'pod-a'=(0.5,0.75,0.2,0.3,200,1000)" \
   "SELECT toString((max(cpu_max), max(memory_max))) FROM $DB.process_metrics_1h WHERE instance = 'pod-a'=(0.75,200)" \
   "SELECT sum(Value) FROM $DB.otel_metrics_sum WHERE ServiceName = 'smoke' AND MetricName = 'app.orders'=6" \
-  "SELECT sum(calling_runs) FROM $DB.endpoint_counters WHERE flow = 'http|/x|get' AND parent_service = 'caller' AND parent_flow = 'kafka|t|g' AND root_service = 'edge' AND root_flow = 'http|/y|post'=8" \
-  "SELECT sum(calling_runs) FROM $DB.endpoint_metrics_lean_1h WHERE parent_service = 'caller'=8" \
+  "SELECT sum(runs_by_caller) FROM $DB.endpoint_counters WHERE flow = 'http|/x|get' AND parent_service = 'caller' AND parent_flow = 'kafka|t|g' AND root_service = 'edge' AND root_flow = 'http|/y|post'=8" \
+  "SELECT sum(runs_by_caller) FROM $DB.endpoint_metrics_lean_1h WHERE parent_service = 'caller'=8" \
   "SELECT sum(issues) FROM $DB.endpoint_metrics_lean_1h WHERE fingerprint = 'fp' AND caught = 'false' AND user_error = 'card declined' AND parent_service = '' AND parent_flow = ''=2" \
   "SELECT sum(issues) FROM $DB.endpoint_metrics_1h WHERE instance = 'pod-a'=2" \
+  "SELECT toString((sum(calls), sum(duration_count), sumIf(calls, startsWith(status_code, '5')), sumIf(issues, fingerprint = 'fp'), sum(runs_by_caller), sumMap(buckets))) FROM $DB.endpoint_metrics_union WHERE service = 'smoke' AND flow = 'http|/x|get'=(10,10,10,2,8,{-14:2,-13:4,-12:4})" \
   "SELECT groupArray(flow) FROM (SELECT DISTINCT flow FROM $DB.endpoints WHERE service = 'smoke' ORDER BY flow)=['','http|/x|get','kafka|q|c']" \
   "SELECT groupArray(flow || '/' || function) FROM (SELECT DISTINCT flow, function FROM $DB.functions WHERE service = 'smoke' ORDER BY ALL)=['http|/x|get/f']" \
   "SELECT toString((count(), sum(messages), toUnixTimestamp(min(t)))) FROM $DB.endpoint_counters WHERE service = 'smoke-delta'=(1,9,$((H + 30)))" \
@@ -271,6 +273,57 @@ poll sql smoke-clickstack \
   "SELECT toString((sum(messages), toUnixTimestamp(min(hour)))) FROM $DB.endpoint_metrics_lean_1h WHERE service = 'smoke-delta'=(9,$H)" \
   "SELECT toString((count(), sum(messages), toUnixTimestamp(min(t)))) FROM $DB.endpoint_counters WHERE service = 'smoke-long'=(1,7,$H)"
 poll sql smoke-clickstack "SELECT count() FROM $DB.otel_logs WHERE EventName = 'hud.forensic' AND ServiceName = 'smoke'=1"
+
+echo "--- feature flags: two combinations (about 0.1 s and 2 s), an overflow and runs without flags stay separate rows in the endpoint tables, and the flow dashboard's 'By feature flag' query reads them"
+FLAGS_RESOURCE='{"attributes":[{"key":"service.name","value":{"stringValue":"smoke-flags"}},{"key":"service.instance.id","value":{"stringValue":"pod-f"}},
+  {"key":"deployment.environment.name","value":{"stringValue":"smoke-env"}}]}'
+ff() { # status code, then attribute name and boolean pairs
+  local status=$1; shift
+  echo "\"attributes\":[{\"key\":\"code.flow.name\",\"value\":{\"stringValue\":\"http|/f|get\"}},{\"key\":\"code.flow.type\",\"value\":{\"stringValue\":\"http\"}},
+    {\"key\":\"http.response.status_code\",\"value\":{\"intValue\":\"$status\"}}$(printf ',{"key":"%s","value":{"boolValue":%s}}' "$@")]"
+}
+A=$(ff 200 hud.feature_flag.new_checkout true hud.feature_flag.fast_path false)
+B=$(ff 500 hud.feature_flag.new_checkout false hud.feature_flag.fast_path true) OVERFLOW=$(ff 200 hud.feature_flags.overflow true)
+NONE='"attributes":[{"key":"code.flow.name","value":{"stringValue":"http|/f|get"}},{"key":"code.flow.type","value":{"stringValue":"http"}},{"key":"http.response.status_code","value":{"intValue":"200"}}]'
+start=$(((BASE + 1) * 1000000000)) end=$(((BASE + 2) * 1000000000))
+point() { echo "{$1,\"startTimeUnixNano\":\"$start\",\"timeUnixNano\":\"$end\",\"count\":\"$2\",\"sum\":$3,\"scale\":2,\"zeroCount\":\"0\",\"positive\":{\"offset\":$4,\"bucketCounts\":[\"$2\"]}}"; }
+curl -sf -X POST localhost:14319/v1/metrics -H 'Content-Type: application/json' -d @- >/dev/null <<EOF
+{"resourceMetrics":[{"resource":$FLAGS_RESOURCE,"scopeMetrics":[{"metrics":[
+  {"name":"code.flow.duration","unit":"s","exponentialHistogram":{"aggregationTemporality":1,"dataPoints":[
+    $(point "$A" 4 0.4 -14),$(point "$B" 2 4 4),$(point "$OVERFLOW" 1 0.1 -14),$(point "$NONE" 3 0.3 -14)]}},
+  {"name":"hud.flow.issues","sum":{"aggregationTemporality":1,"isMonotonic":true,"dataPoints":[{${A%]},{"key":"issue.fingerprint","value":{"stringValue":"fp-flags"}}],
+    "asInt":"1","startTimeUnixNano":"$start","timeUnixNano":"$end"}]}}]}]}]}
+EOF
+# The tile's query, with its macros filled in for this flow and a range of fine rows and whole hours.
+PANEL=$(cat <<'EOF'
+SELECT multiIf(ff = '', 'no flags', ff = '__hud_other__', 'other combinations', ff) AS `Feature flags`, round(tn) AS Runs,
+    round(100 * tn / sum(tn) OVER (), 1) AS `Distribution %`, round(100 * (te + tio) / tn, 1) AS `Err Rate (%)`,
+    round(1000 * td / tn, 1) AS `Avg ms`, round(1e3 * hud_duration_quantile(0.9, tb), 1) AS `P90 ms`, round(ti) AS Issues
+FROM (SELECT feature_flags AS ff, sum(runs) AS tn, sum(errors) AS te, sumIf(issues, flow_type != 'http') AS tio,
+          sum(issues) AS ti, sum(dur) AS td, sumMap(bk) AS tb
+      FROM (SELECT t, flow_type, feature_flags, duration_count AS runs, if(startsWith(status_code, '5'), duration_count, 0) AS errors, 0 AS issues, duration_sum AS dur, buckets AS bk FROM hud_otel.endpoint_durations WHERE $__fromTime >= now() - INTERVAL 30 DAY AND t >= $__fromTime AND t < $__toTime AND (t < toStartOfHour($__fromTime) + INTERVAL 1 HOUR OR (toStartOfHour($__toTime) > toStartOfHour($__fromTime) AND t >= toStartOfHour($__toTime))) AND $__filter(env, $env) AND $__filter(service, $service) AND $__filter(flow, $endpoint)
+  UNION ALL SELECT t, flow_type, feature_flags, 0 AS runs, 0 AS errors, issues, 0 AS dur, map() AS bk FROM hud_otel.endpoint_counters WHERE $__fromTime >= now() - INTERVAL 30 DAY AND t >= $__fromTime AND t < $__toTime AND (t < toStartOfHour($__fromTime) + INTERVAL 1 HOUR OR (toStartOfHour($__toTime) > toStartOfHour($__fromTime) AND t >= toStartOfHour($__toTime))) AND $__filter(env, $env) AND $__filter(service, $service) AND $__filter(flow, $endpoint)
+  UNION ALL SELECT hour AS t, flow_type, feature_flags, duration_count AS runs, if(startsWith(status_code, '5'), duration_count, 0) AS errors, issues, duration_sum AS dur, buckets AS bk FROM hud_otel.endpoint_metrics_lean_1h WHERE $__fromTime >= now() - INTERVAL 30 DAY AND hour >= toStartOfHour($__fromTime) + INTERVAL 1 HOUR AND hour < toStartOfHour($__toTime) AND $__filter(env, $env) AND $__filter(service, $service) AND $__filter(flow, $endpoint)
+  UNION ALL SELECT hour AS t, flow_type, feature_flags, duration_count AS runs, if(startsWith(status_code, '5'), duration_count, 0) AS errors, issues, duration_sum AS dur, buckets AS bk FROM hud_otel.endpoint_metrics_lean_1h WHERE NOT ($__fromTime >= now() - INTERVAL 30 DAY) AND hour >= toStartOfHour($__fromTime) AND hour < $__toTime AND $__filter(env, $env) AND $__filter(service, $service) AND $__filter(flow, $endpoint))
+      GROUP BY ff HAVING tn > 0)
+ORDER BY Runs DESC
+EOF
+)
+PANEL=${PANEL//hud_otel./$DB.} PANEL=${PANEL//\$__fromTime/toDateTime($((BASE - 7200)))} PANEL=${PANEL//\$__toTime/toDateTime($((BASE + 60)))}
+PANEL=${PANEL//\$__filter(env, \$env)/env = \'smoke-env\'} PANEL=${PANEL//\$__filter(service, \$service)/service = \'smoke-flags\'}
+PANEL=${PANEL//\$__filter(flow, \$endpoint)/flow = \'http|\/f|get\'}
+FD="$DB.endpoint_durations WHERE service = 'smoke-flags'"
+poll sql smoke-clickstack \
+  "SELECT count() FROM $FD=4" \
+  "SELECT toString((count(), sum(duration_count), sumMap(buckets))) FROM $FD AND feature_flags = 'fast_path=false,new_checkout=true' AND status_code = '200'=(1,4,{-14:4})" \
+  "SELECT toString((count(), sum(duration_count), sumMap(buckets))) FROM $FD AND feature_flags = 'fast_path=true,new_checkout=false' AND status_code = '500'=(1,2,{4:2})" \
+  "SELECT sum(duration_count) FROM $FD AND feature_flags = '__hud_other__'=1" \
+  "SELECT sum(duration_count) FROM $FD AND feature_flags = ''=3" \
+  "SELECT countIf(arrayExists(k -> startsWith(k, 'hud.feature_flag'), mapKeys(attributes))) FROM $FD=0" \
+  "SELECT sum(issues) FROM $DB.endpoint_counters WHERE fingerprint = 'fp-flags' AND feature_flags = 'fast_path=false,new_checkout=true'=1" \
+  "SELECT toString((sum(duration_count), sum(issues))) FROM $DB.endpoint_metrics_lean_1h WHERE service = 'smoke-flags' AND feature_flags = 'fast_path=false,new_checkout=true'=(4,1)" \
+  "SELECT sum(duration_count) FROM $DB.endpoint_metrics_1h WHERE instance = 'pod-f' AND feature_flags = 'fast_path=true,new_checkout=false' AND status_code = '500'=2" \
+  "SELECT toString(groupArray((Runs, \`Err Rate (%)\`, \`Avg ms\`, \`P90 ms\`, Issues))) FROM ($PANEL)=[(4,0,100,103.3,1),(3,0,100,103.3,0),(2,100,2000,2337.6,0),(1,0,100,103.3,0)]"
 
 echo "--- retried insert: the exporter resends a failed batch as is (plain insert, dedup through the views, as clickhouse.yaml), which counts once; another pod's equal point still counts"
 point() { echo '{"ResourceAttributes":{"service.instance.id":"'"$1"'"},"ServiceName":"smoke-retry","MetricName":"hud.flow.messages",'\
