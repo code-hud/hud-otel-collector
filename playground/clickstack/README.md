@@ -49,4 +49,12 @@ above. Changing it needs `docker compose down -v` first, since the setup runs on
 
 With `HUD_SCHEMA_MANAGED=false docker compose up -d`, the init container exits without touching ClickHouse.
 
+Dual mode, the same metrics also in the `metrics` `TimeSeries` table for PromQL (`test/timeseries.yaml`):
+`docker compose -f docker-compose.yaml -f timeseries.compose.yaml up -d`. Then, for example, P90 per flow:
+
+```sh
+curl -s -u hud_backend:Backend-pass-1234 localhost:8123/prometheus/api/v1/query -d database=hud_otel -d table=metrics \
+  --data-urlencode 'query=histogram_quantile(0.9, sum by (code_flow_name, le) (rate(code_flow_duration_seconds_bucket[5m])))'
+```
+
 `docker compose down -v` removes everything, including ClickHouse's and Mongo's anonymous volumes.

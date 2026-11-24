@@ -58,7 +58,7 @@ make build   # OCB generates and compiles _build/hud-otelcol (linux, Docker host
 make image   # hud-otelcol:dev
 make smoke   # five fake pods send deltas concurrently; expects one merged Prometheus series with the summed total,
              # then runs hud-migrate and test/clickhouse.yaml against ClickHouse and checks the SQL tables and otel_logs
-             # (database hud_otel_smoke)
+             # (database hud_otel_smoke), then both with test/timeseries.yaml: the TimeSeries table, read with PromQL
 ```
 
 ## ClickHouse
@@ -130,7 +130,13 @@ SDK sends nothing else), except the process gauges and limits. A delta covers th
 (`aggregationInterval`: 5 minutes by default, set per account) and lands whole at the interval's end (`TimeUnix`): in
 that second's fine row and that hour's hourly row, so a chart is no finer than the export interval.
 The `metrics` `TimeSeries` table (`0003_timeseries.sql`) is only
-created with `HUD_TIMESERIES_TABLE=true`; nothing writes to it, and installs that already have it keep it. `playground/clickstack/` runs it end to end with HyperDX and the node SDK; the
+created with `HUD_TIMESERIES_TABLE=true`, and installs that already have it keep it. `test/timeseries.yaml`, layered on
+`test/clickhouse.yaml` (`--config clickhouse.yaml --config timeseries.yaml`), also writes the metrics into it through
+ClickHouse's Prometheus remote-write endpoint, for PromQL (`/prometheus/api/v1/query`): deltas made cumulative, and the
+exponential histograms as classic `le` buckets on powers of 2 (the table drops native histograms). That pipeline keeps
+`delta_to_cumulative` state, so a pod's metrics must keep reaching one replica. The endpoint is server config
+(`test/clickhouse-prometheus.xml`) on self-managed servers, and only exists on Cloud services in the PromQL private
+preview. `playground/clickstack/` runs it end to end with HyperDX and the node SDK; the
 dashboards are in [hud-clickhouse-resources](https://github.com/code-hud/hud-clickhouse-resources).
 
 The collector's `CLICKHOUSE_ENDPOINT` is the HTTP interface as `scheme://host:port`, e.g.

@@ -5,6 +5,7 @@
 # errors), an exponential histogram, process gauges and a log sent through test/clickhouse.yaml must come out of the SQL
 # tables and otel_logs exactly, a metric no view reads must stay in otel_metrics_*, a flow's feature flag combinations
 # must stay separate rows in the endpoint tables, and a retried insert must count once.
+# Last, test/timeseries.yaml on top: the same metrics also in the TimeSeries table, histograms as le buckets in PromQL.
 set -euo pipefail
 
 IMAGE=${IMAGE:-hud-otelcol:dev}
@@ -16,7 +17,7 @@ DIR=$(cd "$(dirname "$0")" && pwd)
 PLAYGROUND=$DIR/../playground/clickstack
 
 cleanup() {
-  docker rm -f smoke-collector smoke-prometheus smoke-clickhouse smoke-clickstack smoke-clickstack-tls >/dev/null 2>&1 || true
+  docker rm -f smoke-collector smoke-prometheus smoke-clickhouse smoke-clickstack smoke-clickstack-tls smoke-dual >/dev/null 2>&1 || true
   docker network rm $NET >/dev/null 2>&1 || true
   [ -z "${TLS_DIR:-}" ] || rm -rf "$TLS_DIR"
 }
@@ -35,6 +36,8 @@ docker run --rm -v "$DIR:/cfg:ro" -e AWS_ACCESS_KEY_ID=dummy -e AWS_SECRET_ACCES
   "$IMAGE" validate --config /cfg/amp.yaml
 docker run --rm -v "$DIR:/cfg:ro" -e CLICKHOUSE_ENDPOINT=http://localhost:8123 -e CLICKHOUSE_USER=u -e CLICKHOUSE_PASSWORD=p \
   "$IMAGE" validate --config /cfg/clickhouse.yaml
+docker run --rm -v "$DIR:/cfg:ro" -e CLICKHOUSE_ENDPOINT=http://localhost:8123 -e CLICKHOUSE_USER=u -e CLICKHOUSE_PASSWORD=p \
+  "$IMAGE" validate --config /cfg/clickhouse.yaml --config /cfg/timeseries.yaml
 
 echo "--- start Prometheus and collector"
 docker network create $NET >/dev/null
@@ -70,7 +73,8 @@ for r in $(seq 10); do
   wait
 done
 
-query() { curl -s localhost:19090/api/v1/query --data-urlencode "query=$1" | sed -n 's/.*"value":\[[^,]*,"\([^"]*\)"\].*/\1/p'; }
+value() { sed -n 's/.*"value":\[[^,]*,"\([^"]*\)"\].*/\1/p'; }
+query() { curl -s localhost:19090/api/v1/query --data-urlencode "query=$1" | value; }
 # function calls: pod attributes dropped, one series per deployment under the collector's instance, each the
 # sum of its pods; flow messages and memory gauges: one series per pod
 checks=(
@@ -117,6 +121,7 @@ chmod 755 "$TLS_DIR" && chmod 644 "$TLS_DIR"/*.pem
 docker run -d --name smoke-clickhouse --network $NET -p 18123:8123 \
   -e CLICKHOUSE_PASSWORD=admin-pass -e CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1 -e HUD_CLICKHOUSE_DATABASE=$DB \
   -v "$DIR/clickhouse-tls.xml:/etc/clickhouse-server/config.d/tls.xml:ro" -v "$TLS_DIR:/etc/clickhouse-server/certs:ro" \
+  -v "$DIR/clickhouse-prometheus.xml:/etc/clickhouse-server/config.d/prometheus.xml:ro" \
   "${SETUP[@]}" "$CLICKHOUSE_IMAGE" >/dev/null
 # The image runs setup.sh on a temporary server, then restarts it
 for _ in $(seq 60); do
@@ -352,3 +357,36 @@ curl -sf -X POST localhost:14320/v1/logs -H 'Content-Type: application/json' -d 
 EOF
 poll sql smoke-clickstack-tls "SELECT sum(messages) FROM $DB.endpoint_counters WHERE service = 'smoke-tls'=3"
 poll sql smoke-clickstack-tls "SELECT count() FROM $DB.otel_logs WHERE ServiceName = 'smoke-tls'=1"
+
+echo "--- dual: hud-migrate with HUD_TIMESERIES_TABLE=true adds the metrics table; clickhouse.yaml + timeseries.yaml fill the SQL tables and, through remote write, the TimeSeries table, read with PromQL as hud_backend: the scale-2 histogram as le buckets"
+docker run --rm --network $NET "${MIGRATOR[@]}" -e HUD_TIMESERIES_TABLE=true --entrypoint /hud-migrate "$IMAGE" up
+docker run -d --name smoke-dual --network $NET -p 14321:4318 -v "$DIR:/cfg:ro" -e HUD_CLICKHOUSE_DATABASE=$DB \
+  -e CLICKHOUSE_ENDPOINT=http://smoke-clickhouse:8123 -e CLICKHOUSE_USER=hud_collector -e CLICKHOUSE_PASSWORD=Collector-pass-1234 \
+  "$IMAGE" --config /cfg/clickhouse.yaml --config /cfg/timeseries.yaml >/dev/null
+for _ in $(seq 30); do curl -s -o /dev/null localhost:14321 && break; sleep 1; done
+for r in 1 2; do
+  start=$(((BASE + r) * 1000000000)) end=$(((BASE + r + 1) * 1000000000))
+  curl -sf -X POST localhost:14321/v1/metrics -H 'Content-Type: application/json' -d @- >/dev/null <<EOF
+{"resourceMetrics":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"smoke-dual"}},{"key":"service.instance.id","value":{"stringValue":"pod-a"}},
+  {"key":"deployment.environment.name","value":{"stringValue":"smoke-env"}}]},"scopeMetrics":[{"metrics":[
+  {"name":"hud.flow.messages","sum":{"aggregationTemporality":1,"isMonotonic":true,"dataPoints":[{$FLOW,"asInt":"1","startTimeUnixNano":"$start","timeUnixNano":"$end"}]}},
+  {"name":"code.flow.duration","unit":"s","exponentialHistogram":{"aggregationTemporality":1,"dataPoints":[{$FLOW,"startTimeUnixNano":"$start","timeUnixNano":"$end",
+    "count":"5","sum":0.55,"scale":2,"zeroCount":"0","positive":{"offset":-14,"bucketCounts":["1","2","2"]}}]}}]}]}]}
+EOF
+done
+poll sql smoke-dual \
+  "SELECT sum(messages) FROM $DB.endpoint_counters WHERE service = 'smoke-dual'=2" \
+  "SELECT sumMap(buckets) FROM $DB.endpoint_durations WHERE service = 'smoke-dual' AND env = 'smoke-env'={-14:2,-13:4,-12:4}"
+promql() { curl -s -u hud_backend:Backend-pass-1234 localhost:18123/prometheus/api/v1/query --data-urlencode "query=$1" \
+  --data-urlencode database=$DB --data-urlencode table=metrics | value; }
+# Buckets -14 and -13 are in (2^-4, 2^-3] s, -12 in (2^-3, 2^-2]; the series are cumulative over both deltas
+S='job="smoke-dual",instance="pod-a",deployment_environment_name="smoke-env",code_flow_name="http|/x|get"'
+poll promql smoke-dual \
+  "hud_flow_messages_total{$S}=2" \
+  "code_flow_duration_seconds_count{$S}=10" \
+  "code_flow_duration_seconds_sum{$S}=1.1" \
+  "count(code_flow_duration_seconds_bucket{$S})=22" \
+  "code_flow_duration_seconds_bucket{$S,le=\"0.0625\"}=0" \
+  "code_flow_duration_seconds_bucket{$S,le=\"0.125\"}=6" \
+  "code_flow_duration_seconds_bucket{$S,le=\"0.25\"}=10" \
+  "code_flow_duration_seconds_bucket{$S,le=\"+Inf\"}=10"

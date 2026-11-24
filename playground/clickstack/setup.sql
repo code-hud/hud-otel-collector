@@ -5,13 +5,17 @@
 
 CREATE ROLE IF NOT EXISTS hud_write;   GRANT INSERT ON ${HUD_CLICKHOUSE_DATABASE}.* TO hud_write;
 CREATE ROLE IF NOT EXISTS hud_read;    GRANT SELECT ON ${HUD_CLICKHOUSE_DATABASE}.* TO hud_read;
+-- PromQL on the metrics TimeSeries table (/prometheus/api/v1/query) evaluates through a temporary table.
+GRANT CREATE TEMPORARY TABLE ON *.* TO hud_read;
 -- Only what the create-only schema rule allows: the server refuses DROP, RENAME, MODIFY, CREATE OR REPLACE, ADD INDEX.
 CREATE ROLE IF NOT EXISTS hud_ddl;
 GRANT CREATE DATABASE, CREATE TABLE, CREATE VIEW, ALTER ADD COLUMN, SELECT, INSERT ON ${HUD_CLICKHOUSE_DATABASE}.* TO hud_ddl;
 
 -- readonly = 2: HyperDX sets query settings (max_execution_time, ...) on its queries, which readonly = 1 rejects.
+-- PromQL needs enable_time_series_aggregate_functions (private preview).
 CREATE SETTINGS PROFILE IF NOT EXISTS hud_read_profile SETTINGS
-  readonly = 2, max_execution_time = 60, max_memory_usage = 8000000000, max_threads = 8 TO hud_read;
+  readonly = 2, max_execution_time = 60, max_memory_usage = 8000000000, max_threads = 8,
+  enable_time_series_aggregate_functions = 1 TO hud_read;
 CREATE QUOTA IF NOT EXISTS hud_read_quota
   FOR INTERVAL 1 hour MAX queries = 20000, execution_time = 3600, read_bytes = 2000000000000 TO hud_read;
 
