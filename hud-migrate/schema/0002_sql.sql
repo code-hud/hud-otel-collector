@@ -36,9 +36,9 @@
 --   endpoint_durations  by flow, SDK session (service.instance.id), deployment, status, method, route, end reason and
 --                       queue: code.flow.duration (duration_count: the runs, errors are its 5xx ones) and
 --                       hud.flow.e2e.duration (e2e_*: queue latency from publish to the end of the flow)
---   endpoint_counters   by flow, SDK session, deployment, status and queue: hud.flow.messages, hud.flow.issues by
---                       fingerprint and user error, hud.flow.calling_flows by the flow that called it (parent) and
---                       started it (root)
+--   endpoint_counters   by flow, SDK session, deployment, method, route, status, end reason and queue:
+--                       hud.flow.messages, hud.flow.issues by fingerprint and user error, hud.flow.calling_flows by
+--                       the flow that called it (parent) and started it (root)
 --   process_metrics     CPU, memory, event loop and uptime by SDK session and pod. The collector turns the memory sums
 --                       into gauges (test/clickhouse.yaml), so they share the other gauges' row.
 --   function_durations  code.function.call.duration (sampled, so duration_count can be below calls) by function,
@@ -316,9 +316,10 @@ SETTINGS ttl_only_drop_parts = 1, non_replicated_deduplication_window = 10000,
     replicated_deduplication_window = 10000
 COMMENT 'Flow (endpoint) run durations and queue latency, from the code.flow.duration and hud.flow.e2e.duration delta histograms. One row per insert for each env, service, flow, export interval end t, SDK session, deployment, flow type, method, route, status, end reason, destination and feature flag combination: sum rows to aggregate. Filled by endpoint_durations_mv, kept 30 days.';
 
--- A flow's counters, all by status code and destination as the run had them, and each by its own columns, '' in the
--- others' rows: issues by fingerprint, framework result, caught and user error, runs_by_caller (runs by the flow that
--- called it (parent) and started it (root; multiple: the run had more than one)) by parent and root.
+-- A flow's counters, all by method, route, status code, end reason and destination as the run had them, and each by
+-- its own columns, '' in the others' rows: issues by fingerprint, framework result, caught and user error,
+-- runs_by_caller (runs by the flow that called it (parent) and started it (root; multiple: the run had more than one))
+-- by parent and root.
 CREATE TABLE IF NOT EXISTS ${DATABASE}.endpoint_counters
 (
     t DateTime COMMENT 'End of the export interval the point covers (its TimeUnix), second precision',
@@ -326,7 +327,11 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.endpoint_counters
     service LowCardinality(String) COMMENT 'Resource attribute service.name',
     flow LowCardinality(String) COMMENT 'Flow key, code.flow.name: the flow type and identity, e.g. http|/users|get',
     flow_type LowCardinality(String) COMMENT 'code.flow.type: http, graphql, kafka, sqs, grpc or another flow kind',
+    method LowCardinality(String) COMMENT 'http.request.method, HTTP flows only, else empty',
+    route LowCardinality(String) COMMENT 'http.route, HTTP flows only, else empty',
     status_code LowCardinality(String) COMMENT 'http.response.status_code of the runs (HTTP, GraphQL), else empty',
+    end_reason LowCardinality(String)
+        COMMENT 'hud.flow.end_reason: http.server_timeout, http.client_timeout or http.response_aborted, empty when the run ended normally',
     destination LowCardinality(String)
         COMMENT 'Queue or topic: messaging.destination.name, else messaging.destination.template, empty for flows without a queue',
     deployment LowCardinality(String) COMMENT 'Resource attribute deployment.id',
@@ -352,17 +357,17 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.endpoint_counters
 ENGINE = MergeTree
 PARTITION BY toDate(t)
 PRIMARY KEY (env, service, flow, t)
-ORDER BY (env, service, flow, t, instance, flow_type, status_code, destination, deployment, fingerprint, framework_result,
-    caught, user_error, parent_service, parent_flow, root_service, root_flow, parent_multiple, root_multiple, feature_flags)
+ORDER BY (env, service, flow, t, instance, flow_type, method, route, status_code, end_reason, destination, deployment,
+    fingerprint, framework_result, caught, user_error, parent_service, parent_flow, root_service, root_flow, parent_multiple,
+    root_multiple, feature_flags)
 TTL t + toIntervalDay(30)
 SETTINGS ttl_only_drop_parts = 1, non_replicated_deduplication_window = 10000,
     replicated_deduplication_window = 10000
-COMMENT 'Flow counters, from the hud.flow.messages, hud.flow.issues and hud.flow.calling_flows delta sums. One row per insert for each env, service, flow, export interval end t, SDK session, deployment, status, destination, feature flag combination and the key columns of its metric, the others empty: issues by fingerprint, framework result, caught and user error, runs_by_caller by parent and root. Sum rows to aggregate. Filled by endpoint_counters_mv, kept 30 days.';
+COMMENT 'Flow counters, from the hud.flow.messages, hud.flow.issues and hud.flow.calling_flows delta sums. One row per insert for each env, service, flow, export interval end t, SDK session, deployment, method, route, status, end reason, destination, feature flag combination and the key columns of its metric, the others empty: issues by fingerprint, framework result, caught and user error, runs_by_caller by parent and root. Sum rows to aggregate. Filled by endpoint_counters_mv, kept 30 days.';
 
 -- Both endpoint tables as one, at the fine grain, like endpoint_metrics_1h: duration rows carry '' and 0 in the
 -- counter columns and counter rows the reverse, so sum over both. calls is the runs (flows aren't sampled, so
--- duration_count); averages stay duration_sum / duration_count. Counter rows have no method, route or end_reason
--- (''), so a filter on them leaves out issues, messages and runs_by_caller. UNION ALL matches columns by position.
+-- duration_count); averages stay duration_sum / duration_count. UNION ALL matches columns by position.
 CREATE VIEW IF NOT EXISTS ${DATABASE}.endpoint_metrics_union
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
 SELECT t, env, service, flow, flow_type, status_code, destination, deployment, instance, feature_flags,
@@ -376,7 +381,7 @@ SELECT t, env, service, flow, flow_type, status_code, destination, deployment, i
 FROM ${DATABASE}.endpoint_durations
 UNION ALL
 SELECT t, env, service, flow, flow_type, status_code, destination, deployment, instance, feature_flags,
-    '', '', '',
+    method, route, end_reason,
     fingerprint, framework_result, caught, user_error,
     parent_service, parent_flow, parent_multiple, root_service, root_flow, root_multiple,
     toUInt64(0), toUInt64(0), toFloat64(0), map(),
@@ -384,7 +389,7 @@ SELECT t, env, service, flow, flow_type, status_code, destination, deployment, i
     issues, messages, runs_by_caller,
     last_seen, map(), map()
 FROM ${DATABASE}.endpoint_counters
-COMMENT 'endpoint_durations and endpoint_counters as one, at the fine grain: duration rows carry empty strings and 0 in the counter columns and counter rows the reverse, so sum over both. calls is the runs (duration_count). Counter rows have empty method, route and end_reason, so a filter on them leaves out issues, messages and runs_by_caller.';
+COMMENT 'endpoint_durations and endpoint_counters as one, at the fine grain: duration rows carry empty strings and 0 in the counter columns and counter rows the reverse, so sum over both. calls is the runs (duration_count).';
 
 CREATE TABLE IF NOT EXISTS ${DATABASE}.endpoint_metrics_1h
 (
@@ -393,12 +398,12 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.endpoint_metrics_1h
     service LowCardinality(String) COMMENT 'Resource attribute service.name',
     flow LowCardinality(String) COMMENT 'Flow key, code.flow.name: the flow type and identity, e.g. http|/users|get',
     flow_type LowCardinality(String) COMMENT 'code.flow.type: http, graphql, kafka, sqs, grpc or another flow kind',
-    method LowCardinality(String) COMMENT 'http.request.method of duration rows (HTTP flows), else empty',
-    route LowCardinality(String) COMMENT 'http.route of duration rows (HTTP flows), else empty',
+    method LowCardinality(String) COMMENT 'http.request.method of the runs (HTTP flows), in duration and counter rows, else empty',
+    route LowCardinality(String) COMMENT 'http.route of the runs (HTTP flows), in duration and counter rows, else empty',
     status_code LowCardinality(String)
         COMMENT 'http.response.status_code of the runs (HTTP, GraphQL), in duration and counter rows, else empty',
     end_reason LowCardinality(String)
-        COMMENT 'hud.flow.end_reason of duration rows: http.server_timeout, http.client_timeout or http.response_aborted, else empty',
+        COMMENT 'hud.flow.end_reason of the runs, in duration and counter rows: http.server_timeout, http.client_timeout or http.response_aborted, else empty',
     destination LowCardinality(String)
         COMMENT 'Queue or topic (messaging.destination.name, else .template) of duration and counter rows, empty for flows without a queue',
     deployment LowCardinality(String) COMMENT 'Resource attribute deployment.id',
@@ -451,12 +456,12 @@ CREATE TABLE IF NOT EXISTS ${DATABASE}.endpoint_metrics_lean_1h
     service LowCardinality(String) COMMENT 'Resource attribute service.name',
     flow LowCardinality(String) COMMENT 'Flow key, code.flow.name: the flow type and identity, e.g. http|/users|get',
     flow_type LowCardinality(String) COMMENT 'code.flow.type: http, graphql, kafka, sqs, grpc or another flow kind',
-    method LowCardinality(String) COMMENT 'http.request.method of duration rows (HTTP flows), else empty',
-    route LowCardinality(String) COMMENT 'http.route of duration rows (HTTP flows), else empty',
+    method LowCardinality(String) COMMENT 'http.request.method of the runs (HTTP flows), in duration and counter rows, else empty',
+    route LowCardinality(String) COMMENT 'http.route of the runs (HTTP flows), in duration and counter rows, else empty',
     status_code LowCardinality(String)
         COMMENT 'http.response.status_code of the runs (HTTP, GraphQL), in duration and counter rows, else empty',
     end_reason LowCardinality(String)
-        COMMENT 'hud.flow.end_reason of duration rows: http.server_timeout, http.client_timeout or http.response_aborted, else empty',
+        COMMENT 'hud.flow.end_reason of the runs, in duration and counter rows: http.server_timeout, http.client_timeout or http.response_aborted, else empty',
     destination LowCardinality(String)
         COMMENT 'Queue or topic (messaging.destination.name, else .template) of duration and counter rows, empty for flows without a queue',
     deployment LowCardinality(String) COMMENT 'Resource attribute deployment.id',
@@ -769,8 +774,8 @@ DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
 WITH mapFilter((k, v) -> startsWith(k, 'hud.feature_flag.'), Attributes) AS flags
 SELECT toDateTime(TimeUnix) AS t,
     ResourceAttributes['deployment.environment.name'] AS env, ServiceName AS service, Attributes['code.flow.name'] AS flow,
-    Attributes['code.flow.type'] AS flow_type,
-    Attributes['http.response.status_code'] AS status_code,
+    Attributes['code.flow.type'] AS flow_type, Attributes['http.request.method'] AS method, Attributes['http.route'] AS route,
+    Attributes['http.response.status_code'] AS status_code, Attributes['hud.flow.end_reason'] AS end_reason,
     if(Attributes['messaging.destination.name'] != '', Attributes['messaging.destination.name'],
         Attributes['messaging.destination.template']) AS destination,
     ResourceAttributes['deployment.id'] AS deployment,
@@ -789,8 +794,9 @@ SELECT toDateTime(TimeUnix) AS t,
     sumIf(Value, MetricName = 'hud.flow.calling_flows') AS runs_by_caller, max(TimeUnix) AS last_seen
 FROM ${DATABASE}.otel_metrics_sum
 WHERE MetricName IN ('hud.flow.messages', 'hud.flow.issues', 'hud.flow.calling_flows') AND AggregationTemporality = 1
-GROUP BY t, env, service, flow, flow_type, status_code, destination, deployment, fingerprint, framework_result, caught,
-    user_error, parent_service, parent_flow, parent_multiple, root_service, root_flow, root_multiple, instance, feature_flags
+GROUP BY t, env, service, flow, flow_type, method, route, status_code, end_reason, destination, deployment, fingerprint,
+    framework_result, caught, user_error, parent_service, parent_flow, parent_multiple, root_service, root_flow,
+    root_multiple, instance, feature_flags
 COMMENT 'Reads hud.flow.messages, hud.flow.issues and hud.flow.calling_flows delta points from otel_metrics_sum and writes them to endpoint_counters, grouped per insert.';
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.process_metrics_mv TO ${DATABASE}.process_metrics
@@ -907,24 +913,26 @@ COMMENT 'Rolls each endpoint_durations insert up by hour into endpoint_metrics_l
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.endpoint_metrics_1h_from_counters_mv TO ${DATABASE}.endpoint_metrics_1h
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
-SELECT toStartOfHour(t) AS hour, env, service, flow, flow_type, status_code, destination, deployment, fingerprint,
-    framework_result, caught, user_error, parent_service, parent_flow, parent_multiple, root_service, root_flow,
-    root_multiple, instance, feature_flags,
+SELECT toStartOfHour(t) AS hour, env, service, flow, flow_type, method, route, status_code, end_reason, destination,
+    deployment, fingerprint, framework_result, caught, user_error, parent_service, parent_flow, parent_multiple,
+    root_service, root_flow, root_multiple, instance, feature_flags,
     sum(messages) AS messages, sum(issues) AS issues, sum(runs_by_caller) AS runs_by_caller, max(last_seen) AS last_seen
 FROM ${DATABASE}.endpoint_counters
-GROUP BY hour, env, service, flow, flow_type, status_code, destination, deployment, fingerprint, framework_result, caught,
-    user_error, parent_service, parent_flow, parent_multiple, root_service, root_flow, root_multiple, instance, feature_flags
+GROUP BY hour, env, service, flow, flow_type, method, route, status_code, end_reason, destination, deployment, fingerprint,
+    framework_result, caught, user_error, parent_service, parent_flow, parent_multiple, root_service, root_flow,
+    root_multiple, instance, feature_flags
 COMMENT 'Rolls each endpoint_counters insert up by hour into endpoint_metrics_1h.';
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.endpoint_metrics_lean_1h_from_counters_mv TO ${DATABASE}.endpoint_metrics_lean_1h
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
-SELECT toStartOfHour(t) AS hour, env, service, flow, flow_type, status_code, destination, deployment, fingerprint,
-    framework_result, caught, user_error, parent_service, parent_flow, parent_multiple, root_service, root_flow,
-    root_multiple, feature_flags,
+SELECT toStartOfHour(t) AS hour, env, service, flow, flow_type, method, route, status_code, end_reason, destination,
+    deployment, fingerprint, framework_result, caught, user_error, parent_service, parent_flow, parent_multiple,
+    root_service, root_flow, root_multiple, feature_flags,
     sum(messages) AS messages, sum(issues) AS issues, sum(runs_by_caller) AS runs_by_caller, max(last_seen) AS last_seen
 FROM ${DATABASE}.endpoint_counters
-GROUP BY hour, env, service, flow, flow_type, status_code, destination, deployment, fingerprint, framework_result, caught,
-    user_error, parent_service, parent_flow, parent_multiple, root_service, root_flow, root_multiple, feature_flags
+GROUP BY hour, env, service, flow, flow_type, method, route, status_code, end_reason, destination, deployment, fingerprint,
+    framework_result, caught, user_error, parent_service, parent_flow, parent_multiple, root_service, root_flow,
+    root_multiple, feature_flags
 COMMENT 'Rolls each endpoint_counters insert up by hour into endpoint_metrics_lean_1h.';
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.process_metrics_1h_mv TO ${DATABASE}.process_metrics_1h
