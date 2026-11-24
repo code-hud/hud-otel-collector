@@ -3,8 +3,11 @@
 -- +goose ENVSUB ON
 
 -- Only applied with HUD_TIMESERIES_TABLE=true (hud-migrate skips it otherwise): for a collector that feeds it with the
--- prometheus_remote_write exporter, read with PromQL. The inner tables land in the same database.
+-- prometheus_remote_write exporter, read with PromQL. Its own database, ${DATABASE}_promql, next to the SQL tables'; the
+-- inner tables land there too.
 -- No samples TTL: it has to name the inner layout's columns, which change between engine versions.
-CREATE TABLE IF NOT EXISTS ${DATABASE}.metrics
+CREATE DATABASE IF NOT EXISTS ${DATABASE}_promql;
+
+CREATE TABLE IF NOT EXISTS ${DATABASE}_promql.metrics
 ENGINE = TimeSeries
 SETTINGS enable_time_series_table = 1;

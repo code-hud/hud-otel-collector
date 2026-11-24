@@ -7,7 +7,7 @@
 // collector's endpoint works as is), CLICKHOUSE_USER, CLICKHOUSE_PASSWORD, CLICKHOUSE_TLS_INSECURE_SKIP_VERIFY,
 // HUD_CLICKHOUSE_DATABASE (default hud_otel, ${DATABASE} in the schema files),
 // HUD_LOGS_TTL_DAYS (default 30, only used when otel_logs is created), HUD_TIMESERIES_TABLE=true to also create the
-// metrics TimeSeries table (default false). HUD_SCHEMA_MANAGED=false makes it exit
+// metrics TimeSeries table, in its own database ${DATABASE}_promql (default false). HUD_SCHEMA_MANAGED=false makes it exit
 // without connecting, for customers who run the migrations themselves.
 package main
 

@@ -358,7 +358,7 @@ EOF
 poll sql smoke-clickstack-tls "SELECT sum(messages) FROM $DB.endpoint_counters WHERE service = 'smoke-tls'=3"
 poll sql smoke-clickstack-tls "SELECT count() FROM $DB.otel_logs WHERE ServiceName = 'smoke-tls'=1"
 
-echo "--- dual: hud-migrate with HUD_TIMESERIES_TABLE=true adds the metrics table; clickhouse.yaml + timeseries.yaml fill the SQL tables and, through remote write, the TimeSeries table, read with PromQL as hud_backend: the scale-2 histogram as le buckets"
+echo "--- dual: hud-migrate with HUD_TIMESERIES_TABLE=true adds the metrics table in ${DB}_promql, the SQL tables stay in $DB; clickhouse.yaml + timeseries.yaml fill the SQL tables and, through remote write, the TimeSeries table, read with PromQL as hud_backend: the scale-2 histogram as le buckets"
 docker run --rm --network $NET "${MIGRATOR[@]}" -e HUD_TIMESERIES_TABLE=true --entrypoint /hud-migrate "$IMAGE" up
 docker run -d --name smoke-dual --network $NET -p 14321:4318 -v "$DIR:/cfg:ro" -e HUD_CLICKHOUSE_DATABASE=$DB \
   -e CLICKHOUSE_ENDPOINT=http://smoke-clickhouse:8123 -e CLICKHOUSE_USER=hud_collector -e CLICKHOUSE_PASSWORD=Collector-pass-1234 \
@@ -375,10 +375,12 @@ for r in 1 2; do
 EOF
 done
 poll sql smoke-dual \
+  "SELECT arrayStringConcat(groupArray(database), ',') FROM system.tables WHERE name = 'metrics' AND engine = 'TimeSeries'=${DB}_promql" \
+  "SELECT countIf(database = '$DB') = 0 AND countIf(database = '${DB}_promql') = 5 FROM system.tables WHERE name LIKE '.inner%'=1" \
   "SELECT sum(messages) FROM $DB.endpoint_counters WHERE service = 'smoke-dual'=2" \
   "SELECT sumMap(buckets) FROM $DB.endpoint_durations WHERE service = 'smoke-dual' AND env = 'smoke-env'={-14:2,-13:4,-12:4}"
 promql() { curl -s -u hud_backend:Backend-pass-1234 localhost:18123/prometheus/api/v1/query --data-urlencode "query=$1" \
-  --data-urlencode database=$DB --data-urlencode table=metrics | value; }
+  --data-urlencode database=${DB}_promql --data-urlencode table=metrics | value; }
 # Buckets -14 and -13 are in (2^-4, 2^-3] s, -12 in (2^-3, 2^-2]; the series are cumulative over both deltas
 S='job="smoke-dual",instance="pod-a",deployment_environment_name="smoke-env",code_flow_name="http|/x|get"'
 poll promql smoke-dual \

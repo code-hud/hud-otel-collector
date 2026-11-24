@@ -1,7 +1,7 @@
 # Layered on test/clickhouse.yaml (--config clickhouse.yaml --config timeseries.yaml): the same metrics also go, through
 # ClickHouse's Prometheus remote-write handler (test/clickhouse-prometheus.xml), into the metrics TimeSeries table that
-# hud-migrate creates with HUD_TIMESERIES_TABLE=true, read with PromQL. Same database, endpoint and user as the SQL
-# tables; INSERT on the database covers the table's inner tables.
+# hud-migrate creates with HUD_TIMESERIES_TABLE=true, read with PromQL. Its database is the SQL tables' with suffix
+# _promql (hud_otel_promql); same endpoint and user, and INSERT on that database covers the table's inner tables.
 # Unlike the SQL pipeline this one keeps state: delta_to_cumulative sums each pod's deltas, so a pod's metrics must keep
 # reaching the same replica (one replica, or routing by pod), or replicas write conflicting samples of one series.
 extensions:
@@ -26,7 +26,7 @@ processors:
 
 exporters:
   prometheus_remote_write:
-    endpoint: ${env:CLICKHOUSE_ENDPOINT}/prometheus/api/v1/write?database=${env:HUD_CLICKHOUSE_DATABASE:-hud_otel}&table=metrics
+    endpoint: ${env:CLICKHOUSE_ENDPOINT}/prometheus/api/v1/write?database=${env:HUD_CLICKHOUSE_DATABASE:-hud_otel}_promql&table=metrics
     auth:
       authenticator: basicauth/clickhouse
     # Every resource attribute (environment, deployment, ...) becomes a label, as the SQL tables keep them; service.*
