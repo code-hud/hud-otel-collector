@@ -256,11 +256,11 @@ poll sql smoke-clickstack \
   "SELECT toString((round(sum(cpu_sum) / sum(cpu_count), 3), max(cpu_max), round(sum(elu_sum) / sum(elu_count), 3), max(elu_max), max(memory_max), max(memory_limit))) FROM $DB.process_metrics WHERE instance = 'pod-a'=(0.5,0.75,0.2,0.3,200,1000)" \
   "SELECT toString((max(cpu_max), max(memory_max))) FROM $DB.process_metrics_1h WHERE instance = 'pod-a'=(0.75,200)" \
   "SELECT sum(Value) FROM $DB.otel_metrics_sum WHERE ServiceName = 'smoke' AND MetricName = 'app.orders'=6" \
-  "SELECT sum(calling_runs) FROM $DB.endpoint_counters WHERE flow = 'http|/x|get' AND parent_service = 'caller' AND parent_flow = 'kafka|t|g' AND root_service = 'edge' AND root_flow = 'http|/y|post'=8" \
-  "SELECT sum(calling_runs) FROM $DB.endpoint_metrics_lean_1h WHERE parent_service = 'caller'=8" \
+  "SELECT sum(runs_by_caller) FROM $DB.endpoint_counters WHERE flow = 'http|/x|get' AND parent_service = 'caller' AND parent_flow = 'kafka|t|g' AND root_service = 'edge' AND root_flow = 'http|/y|post'=8" \
+  "SELECT sum(runs_by_caller) FROM $DB.endpoint_metrics_lean_1h WHERE parent_service = 'caller'=8" \
   "SELECT sum(issues) FROM $DB.endpoint_metrics_lean_1h WHERE fingerprint = 'fp' AND caught = 'false' AND user_error = 'card declined' AND parent_service = '' AND parent_flow = ''=2" \
   "SELECT sum(issues) FROM $DB.endpoint_metrics_1h WHERE instance = 'pod-a'=2" \
-  "SELECT toString((sum(calls), sum(duration_count), sumIf(calls, startsWith(status_code, '5')), sumIf(issues, fingerprint = 'fp'), sum(calling_runs), sumMap(buckets))) FROM $DB.endpoint_metrics_union WHERE service = 'smoke' AND flow = 'http|/x|get'=(10,10,10,2,8,{-14:2,-13:4,-12:4})" \
+  "SELECT toString((sum(calls), sum(duration_count), sumIf(calls, startsWith(status_code, '5')), sumIf(issues, fingerprint = 'fp'), sum(runs_by_caller), sumMap(buckets))) FROM $DB.endpoint_metrics_union WHERE service = 'smoke' AND flow = 'http|/x|get'=(10,10,10,2,8,{-14:2,-13:4,-12:4})" \
   "SELECT groupArray(flow) FROM (SELECT DISTINCT flow FROM $DB.endpoints WHERE service = 'smoke' ORDER BY flow)=['','http|/x|get','kafka|q|c']" \
   "SELECT groupArray(flow || '/' || function) FROM (SELECT DISTINCT flow, function FROM $DB.functions WHERE service = 'smoke' ORDER BY ALL)=['http|/x|get/f']" \
   "SELECT toString((count(), sum(messages), toUnixTimestamp(min(t)))) FROM $DB.endpoint_counters WHERE service = 'smoke-delta'=(1,9,$((H + 30)))" \
