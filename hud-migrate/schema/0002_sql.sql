@@ -365,31 +365,7 @@ SETTINGS ttl_only_drop_parts = 1, non_replicated_deduplication_window = 10000,
     replicated_deduplication_window = 10000
 COMMENT 'Flow counters, from the hud.flow.messages, hud.flow.issues and hud.flow.calling_flows delta sums. One row per insert for each env, service, flow, export interval end t, SDK session, deployment, method, route, status, end reason, destination, feature flag combination and the key columns of its metric, the others empty: issues by fingerprint, framework result, caught and user error, runs_by_caller by parent and root. Sum rows to aggregate. Filled by endpoint_counters_mv, kept 30 days.';
 
--- Both endpoint tables as one, at the fine grain, like endpoint_metrics_1h: duration rows carry '' and 0 in the
--- counter columns and counter rows the reverse, so sum over both. calls is the runs (flows aren't sampled, so
--- duration_count); averages stay duration_sum / duration_count. UNION ALL matches columns by position.
-CREATE VIEW IF NOT EXISTS ${DATABASE}.endpoint_metrics_union
-DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
-SELECT t, env, service, flow, flow_type, status_code, destination, deployment, instance, feature_flags,
-    method, route, end_reason,
-    '' AS fingerprint, '' AS framework_result, '' AS caught, '' AS user_error,
-    '' AS parent_service, '' AS parent_flow, '' AS parent_multiple, '' AS root_service, '' AS root_flow, '' AS root_multiple,
-    duration_count AS calls, duration_count, duration_sum, buckets,
-    e2e_count, e2e_sum, e2e_buckets,
-    toFloat64(0) AS issues, toFloat64(0) AS messages, toFloat64(0) AS runs_by_caller,
-    last_seen, attributes, attribute_counts
-FROM ${DATABASE}.endpoint_durations
-UNION ALL
-SELECT t, env, service, flow, flow_type, status_code, destination, deployment, instance, feature_flags,
-    method, route, end_reason,
-    fingerprint, framework_result, caught, user_error,
-    parent_service, parent_flow, parent_multiple, root_service, root_flow, root_multiple,
-    toUInt64(0), toUInt64(0), toFloat64(0), map(),
-    toUInt64(0), toFloat64(0), map(),
-    issues, messages, runs_by_caller,
-    last_seen, map(), map()
-FROM ${DATABASE}.endpoint_counters
-COMMENT 'endpoint_durations and endpoint_counters as one, at the fine grain: duration rows carry empty strings and 0 in the counter columns and counter rows the reverse, so sum over both. calls is the runs (duration_count).';
+-- The endpoint union is installed in 0004: existing hud.3 endpoint tables don't have its columns.
 
 CREATE TABLE IF NOT EXISTS ${DATABASE}.endpoint_metrics_1h
 (
@@ -737,6 +713,19 @@ COMMENT 'Every function seen in the last 180 days, one row per env, service, flo
 
 -- Fine tables, from the otel_metrics_* tables. bucket_keys are a histogram point's bucket indexes on scale 2, other its
 -- other attributes (the duration views keep them, one per run or call).
+
+-- ClickHouse validates a materialized view's SELECT against its target before honoring IF NOT EXISTS.
+-- Keep these legacy definitions replayable on hud.3 without changing the existing views or sorting keys.
+ALTER TABLE ${DATABASE}.endpoint_durations ADD COLUMN IF NOT EXISTS feature_flags LowCardinality(String) DEFAULT '';
+ALTER TABLE ${DATABASE}.endpoint_counters ADD COLUMN IF NOT EXISTS feature_flags LowCardinality(String) DEFAULT '';
+ALTER TABLE ${DATABASE}.endpoint_counters ADD COLUMN IF NOT EXISTS method LowCardinality(String) DEFAULT '';
+ALTER TABLE ${DATABASE}.endpoint_counters ADD COLUMN IF NOT EXISTS route LowCardinality(String) DEFAULT '';
+ALTER TABLE ${DATABASE}.endpoint_counters ADD COLUMN IF NOT EXISTS end_reason LowCardinality(String) DEFAULT '';
+ALTER TABLE ${DATABASE}.endpoint_counters ADD COLUMN IF NOT EXISTS runs_by_caller Float64 DEFAULT 0;
+ALTER TABLE ${DATABASE}.endpoint_metrics_1h ADD COLUMN IF NOT EXISTS feature_flags LowCardinality(String) DEFAULT '';
+ALTER TABLE ${DATABASE}.endpoint_metrics_1h ADD COLUMN IF NOT EXISTS runs_by_caller SimpleAggregateFunction(sum, Float64) DEFAULT 0;
+ALTER TABLE ${DATABASE}.endpoint_metrics_lean_1h ADD COLUMN IF NOT EXISTS feature_flags LowCardinality(String) DEFAULT '';
+ALTER TABLE ${DATABASE}.endpoint_metrics_lean_1h ADD COLUMN IF NOT EXISTS runs_by_caller SimpleAggregateFunction(sum, Float64) DEFAULT 0;
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.endpoint_durations_mv TO ${DATABASE}.endpoint_durations
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS

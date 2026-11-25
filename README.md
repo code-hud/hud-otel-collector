@@ -67,16 +67,16 @@ make smoke   # five fake pods send deltas concurrently; expects one merged Prome
 `test/clickhouse.yaml` sends the SDK's metrics through the `clickhouse` exporter into its default `otel_metrics_*` tables
 of `hud_otel`, and logs into `hud_otel.otel_logs`. The `otel_metrics_*` tables are the exporter's own layout (so HyperDX
 reads them as a metrics source) and keep the raw rows 3 days, every metric the SDK sends; materialized views sum each
-insert into the tables below (`hud-migrate/schema/0002_sql.sql`). A time range of those can be rebuilt from the raw rows
+insert into the tables below (`hud-migrate/schema/0002_sql.sql` and `0004_endpoint_feature_flags.sql`). A time range of those can be rebuilt from the raw rows
 by running their views' `SELECT`. The collector keeps no state (no pod merging, no `delta_to_cumulative`), so it scales
 out freely: it only batches the inserts.
 
 | Tables | Grain | One row per (and what it sums) |
 | --- | --- | --- |
-| `endpoint_durations` | export | flow, SDK session (`service.instance.id`), deployment, status code, method, route, end reason, queue and feature flag combination: runs, duration, queue latency (e2e) |
-| `endpoint_counters` | export | flow, SDK session, deployment, status code, method, route, end reason, queue, and per counter: issue fingerprint and user error (issues), the flow that called it (parent) and started it (root) (`runs_by_caller`); and feature flag combination |
-| `endpoint_metrics_1h` | hour | both endpoint tables |
-| `endpoint_metrics_lean_1h` | hour | the same without the session |
+| `endpoint_durations_v2` | export | flow, SDK session (`service.instance.id`), deployment, status code, method, route, end reason, queue and feature flag combination: runs, duration, queue latency (e2e) |
+| `endpoint_counters_v2` | export | flow, SDK session, deployment, status code, method, route, end reason, queue, and per counter: issue fingerprint and user error (issues), the flow that called it (parent) and started it (root) (`runs_by_caller`); and feature flag combination |
+| `endpoint_metrics_1h_v2` | hour | both endpoint tables |
+| `endpoint_metrics_lean_1h_v2` | hour | the same without the session |
 | `process_metrics`, `process_metrics_1h` | export, hour | SDK session and its pod: last report, uptime, CPU, memory and its limit, event loop utilization |
 | `function_durations` | export | function, file, caller function (name and file), flow, content hash, deployment: duration |
 | `function_counters` | export | the same and error type: calls, errors |
@@ -109,6 +109,16 @@ add up. Session and host attributes are left out, and so are a function's short 
 methods (the flow's are in its name). The endpoint tables' `feature_flags` is the combination of feature flags a
 flow's runs set (the SDK's `hud.feature_flag.<key>` attributes): the pairs sorted by key, `'fast_path=false,new_checkout=true'`,
 `'__hud_other__'` past the SDK's 16 combinations per flow, `''` without flags; these attributes stay out of `attributes`.
+In the versioned tables, flag names percent-encode `%`, `,` and `=` as `%25`, `%2C` and `%3D` before joining,
+so a key containing the delimiters cannot be mistaken for a different combination.
+
+Migration `0004` creates the same versioned endpoint tables and `endpoint_metrics_union_v2` on a fresh database
+or an upgrade (including `v0.165.0-hud.3`). Existing endpoint rows, sorting keys and materialized views stay
+intact; `0002` only adds missing compatibility columns so ClickHouse can validate the legacy definitions on replay.
+Both generations receive new rows. Point feature-flag queries and dashboards at the `_v2` names. The new tables
+do not include historical rows automatically: use the old tables for historical queries or rebuild from the raw
+points still within their retention window. The unversioned union is left unchanged if it already exists.
+
 Every listed value with its runs:
 
 ```sql
