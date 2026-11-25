@@ -8,7 +8,7 @@
 -- aggregate each insert into the tables below.
 -- Every series is a delta (AggregationTemporality = 1) except the process gauges and limits. Durations are the SDK's
 -- base2 exponential histograms: buckets maps the scale-2 bucket index k, (2^(k/4), 2^((k+1)/4)] seconds, to its count,
--- without the empty ones; hud_duration_quantile(q, sumMap(buckets)) (the admin's setup.sql) reads a percentile. A point
+-- without the empty ones; the dashboards' hud_duration_quantile(q, sumMap(buckets)) reads a percentile. A point
 -- at another scale goes onto scale 2 (exactly from a finer one, from a coarser one each bucket into its top scale-2
 -- bucket). Zero and negative counts (none from the SDK) are dropped. Histogram counts are UInt64, as the exporter's
 -- are; the sum metrics' (messages, issues, calls, ...) are Float64, as its sum values are.
