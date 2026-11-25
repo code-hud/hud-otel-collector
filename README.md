@@ -115,9 +115,16 @@ so a key containing the delimiters cannot be mistaken for a different combinatio
 Migration `0004` creates the same versioned endpoint tables and `endpoint_metrics_union_v2` on a fresh database
 or an upgrade (including `v0.165.0-hud.3`). Existing endpoint rows, sorting keys and materialized views stay
 intact; `0002` only adds missing compatibility columns so ClickHouse can validate the legacy definitions on replay.
-Both generations receive new rows. Point feature-flag queries and dashboards at the `_v2` names. The new tables
-do not include historical rows automatically: use the old tables for historical queries or rebuild from the raw
-points still within their retention window. The unversioned union is left unchanged if it already exists.
+On an existing database, pause and drain endpoint metric writes before first running `0004`, and resume them
+only after `hud-migrate up` succeeds. The pause defines the cutover: each new table snapshots the retained rows
+in its legacy counterpart before the live materialized views are installed. This copies both hourly tables directly,
+including history that has aged out of the fine tables, without rolling up the copied fine rows a second time.
+On fresh installs there's no history to copy; reruns don't copy into an existing `_v2` table.
+
+Backfilled rows retain `''` (no flags) and `__hud_other__` (overflow). All other legacy flag combinations appear
+as `__hud_legacy__` so their totals are preserved without attributing them to a potentially different flag set.
+New rows use the encoded combinations. Both generations receive new rows after the cutover. Point feature-flag
+queries and dashboards at the `_v2` names. The unversioned union is left unchanged if it already exists.
 
 Every listed value with its runs:
 

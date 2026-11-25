@@ -2,8 +2,9 @@
 -- +goose NO TRANSACTION
 -- +goose ENVSUB ON
 
--- Old endpoint tables and their views remain in place. Each raw insert also feeds these versioned
--- tables so fresh installs and upgrades use the same grouping and sorting keys. No historical backfill.
+-- Create each target with its retained legacy snapshot, before attaching any v2 materialized views.
+-- Pause and drain endpoint writers for an upgrade so the snapshots and live writes do not overlap or leave a gap.
+-- A legacy key can conceal a delimiter in a flag name. Preserve the two special buckets, not flag attribution.
 -- Escape percent, comma and equals in flag names so the sorted key=value format is reversible.
 
 CREATE TABLE IF NOT EXISTS ${DATABASE}.endpoint_durations_v2
@@ -45,7 +46,13 @@ ORDER BY (env, service, flow, t, instance, flow_type, method, route, status_code
 TTL t + toIntervalDay(30)
 SETTINGS ttl_only_drop_parts = 1, non_replicated_deduplication_window = 10000,
     replicated_deduplication_window = 10000
-COMMENT 'Flow (endpoint) run durations and queue latency, from the code.flow.duration and hud.flow.e2e.duration delta histograms. One row per insert for each env, service, flow, export interval end t, SDK session, deployment, flow type, method, route, status, end reason, destination and feature flag combination: sum rows to aggregate. Filled by endpoint_durations_v2_mv, kept 30 days.';
+COMMENT 'Flow (endpoint) run durations and queue latency, from the code.flow.duration and hud.flow.e2e.duration delta histograms. One row per insert for each env, service, flow, export interval end t, SDK session, deployment, flow type, method, route, status, end reason, destination and feature flag combination: sum rows to aggregate. Filled by endpoint_durations_v2_mv, kept 30 days.'
+AS SELECT t, env, service, flow, flow_type, method, route, status_code, end_reason, destination, deployment, instance,
+    duration_count, duration_sum, buckets, e2e_count, e2e_sum, e2e_buckets, last_seen,
+    if(feature_flags IN ('', '__hud_other__'), feature_flags, '__hud_legacy__') AS feature_flags,
+    attributes, attribute_counts
+FROM ${DATABASE}.endpoint_durations
+WHERE t >= now() - INTERVAL 30 DAY;
 
 -- A flow's counters, all by method, route, status code, end reason and destination as the run had them, and each by
 -- its own columns, '' in the others' rows: issues by fingerprint, framework result, caught and user error,
@@ -94,7 +101,14 @@ ORDER BY (env, service, flow, t, instance, flow_type, method, route, status_code
 TTL t + toIntervalDay(30)
 SETTINGS ttl_only_drop_parts = 1, non_replicated_deduplication_window = 10000,
     replicated_deduplication_window = 10000
-COMMENT 'Flow counters, from the hud.flow.messages, hud.flow.issues and hud.flow.calling_flows delta sums. One row per insert for each env, service, flow, export interval end t, SDK session, deployment, method, route, status, end reason, destination, feature flag combination and the key columns of its metric, the others empty: issues by fingerprint, framework result, caught and user error, runs_by_caller by parent and root. Sum rows to aggregate. Filled by endpoint_counters_v2_mv, kept 30 days.';
+COMMENT 'Flow counters, from the hud.flow.messages, hud.flow.issues and hud.flow.calling_flows delta sums. One row per insert for each env, service, flow, export interval end t, SDK session, deployment, method, route, status, end reason, destination, feature flag combination and the key columns of its metric, the others empty: issues by fingerprint, framework result, caught and user error, runs_by_caller by parent and root. Sum rows to aggregate. Filled by endpoint_counters_v2_mv, kept 30 days.'
+AS SELECT t, env, service, flow, flow_type, method, route, status_code, end_reason, destination, deployment,
+    fingerprint, framework_result, caught, user_error, parent_service, parent_flow, parent_multiple, root_service,
+    root_flow, root_multiple, instance, messages, issues,
+    arraySum(array(COLUMNS('^(calling_runs|runs_by_caller)\\z'))) AS runs_by_caller, last_seen,
+    if(feature_flags IN ('', '__hud_other__'), feature_flags, '__hud_legacy__') AS feature_flags
+FROM ${DATABASE}.endpoint_counters
+WHERE t >= now() - INTERVAL 30 DAY;
 
 -- Both endpoint tables as one, at the fine grain, like endpoint_metrics_1h_v2: duration rows carry '' and 0 in the
 -- counter columns and counter rows the reverse, so sum over both. calls is the runs (flows aren't sampled, so
@@ -178,7 +192,15 @@ ORDER BY (env, service, flow, hour, instance, flow_type, method, route, status_c
 TTL hour + toIntervalDay(90)
 SETTINGS ttl_only_drop_parts = 1, non_replicated_deduplication_window = 10000,
     replicated_deduplication_window = 10000
-COMMENT 'Hourly rollup of endpoint_durations_v2 and endpoint_counters_v2 with all their columns, SDK session included. AggregatingMergeTree: a key has separate duration and counter rows until merged, so read with sum, sumMap, max and groupUniqArrayArrayMapMerge(1000) grouped by the columns needed. Filled by endpoint_metrics_1h_v2_from_durations_mv and endpoint_metrics_1h_v2_from_counters_mv, kept 90 days.';
+COMMENT 'Hourly rollup of endpoint_durations_v2 and endpoint_counters_v2 with all their columns, SDK session included. AggregatingMergeTree: a key has separate duration and counter rows until merged, so read with sum, sumMap, max and groupUniqArrayArrayMapMerge(1000) grouped by the columns needed. Filled by endpoint_metrics_1h_v2_from_durations_mv and endpoint_metrics_1h_v2_from_counters_mv, kept 90 days.'
+AS SELECT hour, env, service, flow, flow_type, method, route, status_code, end_reason, destination, deployment,
+    fingerprint, framework_result, caught, user_error, parent_service, parent_flow, parent_multiple, root_service,
+    root_flow, root_multiple, instance, duration_count, duration_sum, buckets, e2e_count, e2e_sum, e2e_buckets, messages,
+    issues, arraySum(array(COLUMNS('^(calling_runs|runs_by_caller)\\z'))) AS runs_by_caller, last_seen,
+    if(feature_flags IN ('', '__hud_other__'), feature_flags, '__hud_legacy__') AS feature_flags,
+    attributes, attribute_counts
+FROM ${DATABASE}.endpoint_metrics_1h
+WHERE hour >= toStartOfHour(now() - INTERVAL 90 DAY);
 
 CREATE TABLE IF NOT EXISTS ${DATABASE}.endpoint_metrics_lean_1h_v2
 (
@@ -235,7 +257,15 @@ ORDER BY (env, service, flow, hour, flow_type, method, route, status_code, end_r
 TTL hour + toIntervalDay(180)
 SETTINGS ttl_only_drop_parts = 1, non_replicated_deduplication_window = 10000,
     replicated_deduplication_window = 10000
-COMMENT 'Hourly rollup like endpoint_metrics_1h_v2 without the SDK session (instance), so far fewer rows: what most charts read. Read with sum, sumMap, max and groupUniqArrayArrayMapMerge(1000). Filled by endpoint_metrics_lean_1h_v2_from_durations_mv and endpoint_metrics_lean_1h_v2_from_counters_mv, kept 180 days.';
+COMMENT 'Hourly rollup like endpoint_metrics_1h_v2 without the SDK session (instance), so far fewer rows: what most charts read. Read with sum, sumMap, max and groupUniqArrayArrayMapMerge(1000). Filled by endpoint_metrics_lean_1h_v2_from_durations_mv and endpoint_metrics_lean_1h_v2_from_counters_mv, kept 180 days.'
+AS SELECT hour, env, service, flow, flow_type, method, route, status_code, end_reason, destination, deployment,
+    fingerprint, framework_result, caught, user_error, parent_service, parent_flow, parent_multiple, root_service,
+    root_flow, root_multiple, duration_count, duration_sum, buckets, e2e_count, e2e_sum, e2e_buckets, messages,
+    issues, arraySum(array(COLUMNS('^(calling_runs|runs_by_caller)\\z'))) AS runs_by_caller, last_seen,
+    if(feature_flags IN ('', '__hud_other__'), feature_flags, '__hud_legacy__') AS feature_flags,
+    attributes, attribute_counts
+FROM ${DATABASE}.endpoint_metrics_lean_1h
+WHERE hour >= toStartOfHour(now() - INTERVAL 180 DAY);
 CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.endpoint_metrics_1h_v2_from_durations_mv TO ${DATABASE}.endpoint_metrics_1h_v2
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
 SELECT toStartOfHour(t) AS hour, env, service, flow, flow_type, method, route, status_code, end_reason, destination, deployment,

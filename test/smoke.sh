@@ -355,7 +355,55 @@ INSERT INTO $UPGRADE_DB.otel_metrics_sum
 VALUES ('smoke-legacy', 'hud.flow.calling_flows', {'code.flow.name':'http|/legacy|get'}, toDateTime($BASE), 7, 1);
 EOF
 [ "$(sql "SELECT sum(calling_runs) FROM $UPGRADE_DB.endpoint_counters WHERE service = 'smoke-legacy'")" = 7 ]
-for _ in 1 2; do MIGRATION_DB="$UPGRADE_DB" migrate up; done
+upgrade_sql <<EOF
+ALTER TABLE $UPGRADE_DB.endpoint_durations ADD COLUMN feature_flags LowCardinality(String) DEFAULT '';
+ALTER TABLE $UPGRADE_DB.endpoint_counters ADD COLUMN feature_flags LowCardinality(String) DEFAULT '';
+ALTER TABLE $UPGRADE_DB.endpoint_metrics_1h ADD COLUMN feature_flags LowCardinality(String) DEFAULT '';
+ALTER TABLE $UPGRADE_DB.endpoint_metrics_lean_1h ADD COLUMN feature_flags LowCardinality(String) DEFAULT '';
+
+INSERT INTO $UPGRADE_DB.endpoint_durations (t, service, duration_count, feature_flags)
+SELECT toDateTime($BASE), 'smoke-legacy-flags', n, flags
+FROM values('n UInt64, flags String', (1, ''), (2, 'a=true'), (4, 'a=true,b=false'), (8, '__hud_other__'));
+INSERT INTO $UPGRADE_DB.endpoint_counters (t, service, issues, feature_flags)
+SELECT toDateTime($BASE), 'smoke-legacy-flags', n, flags
+FROM values('n UInt64, flags String', (1, ''), (2, 'a=true'), (4, 'a=true,b=false'), (8, '__hud_other__'));
+INSERT INTO $UPGRADE_DB.endpoint_metrics_1h (hour, service, flow, duration_count, issues, feature_flags)
+SELECT toStartOfHour(now() - INTERVAL 35 DAY), 'smoke-legacy-history', toString(n), n, n, flags
+FROM values('n UInt64, flags String', (1, ''), (2, 'a=true'), (4, 'a=true,b=false'), (8, '__hud_other__'));
+INSERT INTO $UPGRADE_DB.endpoint_metrics_lean_1h (hour, service, flow, duration_count, issues, feature_flags)
+SELECT toStartOfHour(now() - INTERVAL 95 DAY), 'smoke-legacy-history', toString(n), n, n, flags
+FROM values('n UInt64, flags String', (1, ''), (2, 'a=true'), (4, 'a=true,b=false'), (8, '__hud_other__'));
+EOF
+MIGRATION_DB="$UPGRADE_DB" migrate up
+assert_backfill() {
+  local table service metric expected actual
+  for table in endpoint_durations_v2 endpoint_counters_v2 endpoint_metrics_1h_v2 endpoint_metrics_lean_1h_v2; do
+    case "$table" in
+      endpoint_durations_v2) service=smoke-legacy-flags; metric=duration_count ;;
+      endpoint_counters_v2) service=smoke-legacy-flags; metric=issues ;;
+      *) service=smoke-legacy-history; metric='duration_count + issues' ;;
+    esac
+    case "$table" in
+      endpoint_metrics*) expected="[('',2),('__hud_legacy__',12),('__hud_other__',16)]" ;;
+      *) expected="[('',1),('__hud_legacy__',6),('__hud_other__',8)]" ;;
+    esac
+    actual=$(sql "SELECT arraySort(groupArray((feature_flags, total))) FROM
+      (SELECT feature_flags, sum($metric) AS total FROM $UPGRADE_DB.$table
+       WHERE service = '$service' GROUP BY feature_flags)")
+    [ "$actual" = "$expected" ] || { echo "FAIL: $table has $actual after backfill, want $expected"; exit 1; }
+  done
+  echo "PASS: legacy flag buckets and totals in all four v2 endpoint tables"
+}
+assert_backfill
+
+# A newly ingested point can share the historical hour or even the same event timestamp.
+upgrade_sql <<EOF
+INSERT INTO $UPGRADE_DB.otel_metrics_sum
+  (ServiceName, MetricName, Attributes, TimeUnix, Value, AggregationTemporality)
+VALUES ('smoke-legacy', 'hud.flow.calling_flows', {'code.flow.name':'http|/legacy|get'}, toDateTime($BASE), 11, 1);
+EOF
+MIGRATION_DB="$UPGRADE_DB" migrate up
+assert_backfill
 docker run -d --name smoke-upgrade --network $NET -p 14322:4318 -v "$DIR:/cfg:ro" \
   -e CLICKHOUSE_ENDPOINT=http://smoke-clickhouse:8123 -e CLICKHOUSE_USER=hud_collector -e CLICKHOUSE_PASSWORD=Collector-pass-1234 \
   -e HUD_CLICKHOUSE_DATABASE="$UPGRADE_DB" "$IMAGE" --config /cfg/clickhouse.yaml >/dev/null
@@ -393,9 +441,11 @@ EOF
 check_flag_collision "$DB" 14319 smoke-clickstack
 check_flag_collision "$UPGRADE_DB" 14322 smoke-upgrade
 poll sql smoke-upgrade \
-  "SELECT sum(calling_runs) FROM $UPGRADE_DB.endpoint_counters WHERE service = 'smoke-legacy'=7" \
-  "SELECT sum(calling_runs) FROM $UPGRADE_DB.endpoint_metrics_lean_1h WHERE service = 'smoke-legacy'=7" \
-  "SELECT count() FROM $UPGRADE_DB.endpoint_counters_v2 WHERE service = 'smoke-legacy'=0" \
+  "SELECT sum(calling_runs) FROM $UPGRADE_DB.endpoint_counters WHERE service = 'smoke-legacy'=18" \
+  "SELECT sum(calling_runs) FROM $UPGRADE_DB.endpoint_metrics_lean_1h WHERE service = 'smoke-legacy'=18" \
+  "SELECT sum(runs_by_caller) FROM $UPGRADE_DB.endpoint_counters_v2 WHERE service = 'smoke-legacy'=18" \
+  "SELECT sum(runs_by_caller) FROM $UPGRADE_DB.endpoint_metrics_1h_v2 WHERE service = 'smoke-legacy'=18" \
+  "SELECT sum(runs_by_caller) FROM $UPGRADE_DB.endpoint_metrics_lean_1h_v2 WHERE service = 'smoke-legacy'=18" \
   "SELECT sum(issues) FROM $UPGRADE_DB.endpoint_counters WHERE fingerprint = 'fp-collision'=23"
 
 echo "--- retried insert: the exporter resends a failed batch as is (plain insert, dedup through the views, as clickhouse.yaml), which counts once; another pod's equal point still counts"
