@@ -5,9 +5,9 @@
 # errors), an exponential histogram, process gauges and a log sent through test/clickhouse.yaml must come out of the SQL
 # tables and otel_logs exactly, a metric no view reads must stay in otel_metrics_*, a flow's feature flag combinations
 # must stay separate rows in the endpoint tables, and a retried insert must count once.
-# The server starts with the SQL-only setup (setup.sql), which must grant nothing PromQL needs. Last, setup.sh again with
-# HUD_TIMESERIES_TABLE=true adds setup-promql.sql, and test/timeseries.yaml on top: the same metrics also in the
-# TimeSeries table, histograms as le buckets in PromQL.
+# The server starts with the SQL-only setup (setup.sql), which must grant nothing on the PromQL database. Last,
+# setup.sh again with HUD_TIMESERIES_TABLE=true adds setup-promql.sql, and test/timeseries.yaml on top: the same
+# metrics also in the TimeSeries table, histograms as le buckets in PromQL.
 set -euo pipefail
 
 IMAGE=${IMAGE:-hud-otelcol:dev}
@@ -130,23 +130,17 @@ docker run -d --name smoke-clickhouse --network $NET -p 18123:8123 \
   "${SETUP[@]}" "$CLICKHOUSE_IMAGE" >/dev/null
 # The image runs setup.sh on a temporary server, then restarts it
 for _ in $(seq 60); do
-  [ "$(curl -s -u hud_backend:Backend-pass-1234 localhost:18123 --data-binary 'SELECT 1')" = 1 ] && break; sleep 1
+  [ "$(curl -s -u hud_migrator:Migrator-pass-1234 localhost:18123 --data-binary 'SELECT 1')" = 1 ] && break; sleep 1
 done
 MIGRATOR=(-e CLICKHOUSE_ENDPOINT=tcp://smoke-clickhouse:9000 -e CLICKHOUSE_USER=hud_migrator -e CLICKHOUSE_PASSWORD=Migrator-pass-1234
   -e HUD_CLICKHOUSE_DATABASE=$DB)
 migrate() { docker run --rm --network $NET "${MIGRATOR[@]}" --entrypoint /hud-migrate "$IMAGE" "$@"; }
 
-echo "--- SQL-only setup: no ${DB}_promql grant, CREATE TEMPORARY TABLE or PromQL settings profile"
-admin() { docker exec smoke-clickhouse clickhouse-client --password admin-pass -q "$1"; }
-got=$(admin "SELECT count() FROM system.grants WHERE database = '${DB}_promql' OR access_type = 'CREATE TEMPORARY TABLE'")
-got=$got/$(admin "SELECT count() FROM system.settings_profiles WHERE name = 'hud_read_promql_profile'")
-[ "$got" = 0/0 ] || { echo "FAIL: setup.sql alone granted PromQL objects (grants/profiles: $got)"; exit 1; }
-
-echo "--- hud-migrate: HUD_SCHEMA_MANAGED=false doesn't connect, 4 concurrent up create $DB, grants refuse DROP, ADD INDEX and other databases, go test (incl. the create-only check)"
+echo "--- hud-migrate: HUD_SCHEMA_MANAGED=false doesn't connect, 4 concurrent up create $DB and no ${DB}_promql (nor its grants), grants refuse DROP, ADD INDEX and other databases, go test (incl. the create-only check)"
 docker run --rm -e HUD_SCHEMA_MANAGED=false --entrypoint /hud-migrate "$IMAGE" up
 pids=(); for _ in 1 2 3 4; do migrate up & pids+=($!); done
 for p in "${pids[@]}"; do wait "$p"; done
-tables=$(curl -s -u hud_backend:Backend-pass-1234 localhost:18123 \
+tables=$(curl -s -u default:admin-pass localhost:18123 \
   --data-binary "SELECT groupArray(name) FROM (SELECT name FROM system.tables WHERE database = '$DB' AND name NOT LIKE '.inner%' ORDER BY name)")
 want="['endpoint_counters','endpoint_counters_mv','endpoint_durations','endpoint_durations_mv','endpoint_metrics_1h',\
 'endpoint_metrics_1h_from_counters_mv','endpoint_metrics_1h_from_durations_mv','endpoint_metrics_lean_1h',\
@@ -158,10 +152,13 @@ want="['endpoint_counters','endpoint_counters_mv','endpoint_durations','endpoint
 'otel_metrics_exponential_histogram','otel_metrics_gauge','otel_metrics_histogram','otel_metrics_sum',\
 'otel_metrics_summary','process_metrics','process_metrics_1h','process_metrics_1h_mv','process_metrics_mv']"
 [ "$tables" = "$want" ] || { echo "FAIL: $DB has $tables after up, want $want"; exit 1; }
-tables=$(curl -s -u hud_backend:Backend-pass-1234 localhost:18123 \
+tables=$(curl -s -u default:admin-pass localhost:18123 \
   --data-binary "SELECT groupArray(name) FROM (SELECT name FROM system.tables WHERE database = '${DB}_collector' ORDER BY name)")
 want="['otel_metrics_exponential_histogram','otel_metrics_gauge','otel_metrics_histogram','otel_metrics_sum','otel_metrics_summary']"
 [ "$tables" = "$want" ] || { echo "FAIL: ${DB}_collector has $tables after up, want $want"; exit 1; }
+got=$(curl -s -u default:admin-pass localhost:18123 --data-binary "SELECT (SELECT count() FROM system.grants WHERE database = '${DB}_promql')
+  + (SELECT count() FROM system.databases WHERE name = '${DB}_promql')")
+[ "$got" = 0 ] || { echo "FAIL: the SQL-only setup and up made ${DB}_promql grants or the database ($got)"; exit 1; }
 for q in "DROP TABLE $DB.otel_logs" "ALTER TABLE $DB.otel_logs ADD INDEX smoke_idx Body TYPE bloom_filter" \
   "DROP DATABASE $DB" "CREATE DATABASE hud_otel" "CREATE DATABASE ${DB}_promql"; do
   curl -s -u hud_migrator:Migrator-pass-1234 localhost:18123 --data-binary "$q" | grep -q ACCESS_DENIED || { echo "FAIL: hud_migrator may run: $q"; exit 1; }
@@ -245,8 +242,8 @@ curl -sf -X POST localhost:14319/v1/logs -H 'Content-Type: application/json' -d 
   {"timeUnixNano":"$((BASE * 1000000000))","eventName":"hud.forensic","severityText":"ERROR","body":{"stringValue":"{}"}}]}]}]}
 EOF
 
-# As hud_backend, the read-only user Hud's backend gets.
-sql() { curl -s -u hud_backend:Backend-pass-1234 localhost:18123 --data-binary "$1"; }
+# As the admin: the setup creates no read user.
+sql() { curl -s -u default:admin-pass localhost:18123 --data-binary "$1"; }
 F="$DB.endpoint_durations WHERE service = 'smoke' AND env = 'smoke-env'"
 FLOW_ROWS="service = 'smoke' AND flow = 'http|/x|get' AND fingerprint = '' AND parent_flow = ''"
 poll sql smoke-clickstack \
@@ -401,7 +398,7 @@ poll sql smoke-clickstack-tls "SELECT count() FROM $DB.otel_logs WHERE ServiceNa
 echo "--- PromQL setup: setup.sh again, with HUD_TIMESERIES_TABLE=true, on the running server adds setup-promql.sql"
 docker exec -e HUD_TIMESERIES_TABLE=true smoke-clickhouse /docker-entrypoint-initdb.d/setup.sh
 
-echo "--- dual: hud-migrate with HUD_TIMESERIES_TABLE=true adds the metrics table in ${DB}_promql, the SQL tables stay in $DB; clickhouse.yaml + timeseries.yaml fill the SQL tables and, through remote write, the TimeSeries table, read with PromQL as hud_backend: the scale-2 histogram as le buckets"
+echo "--- dual: hud-migrate with HUD_TIMESERIES_TABLE=true adds the metrics table in ${DB}_promql, the SQL tables stay in $DB; clickhouse.yaml + timeseries.yaml fill the SQL tables and, through remote write, the TimeSeries table, read with PromQL as the admin: the scale-2 histogram as le buckets"
 docker run --rm --network $NET "${MIGRATOR[@]}" -e HUD_TIMESERIES_TABLE=true --entrypoint /hud-migrate "$IMAGE" up
 docker run -d --name smoke-dual --network $NET -p 14321:4318 -v "$DIR:/cfg:ro" -e HUD_CLICKHOUSE_DATABASE=$DB \
   -e CLICKHOUSE_ENDPOINT=http://smoke-clickhouse:8123 -e CLICKHOUSE_USER=hud_collector -e CLICKHOUSE_PASSWORD=Collector-pass-1234 \
@@ -422,8 +419,9 @@ poll sql smoke-dual \
   "SELECT countIf(database = '$DB') = 0 AND countIf(database = '${DB}_promql') = 5 FROM system.tables WHERE name LIKE '.inner%'=1" \
   "SELECT sum(messages) FROM $DB.endpoint_counters WHERE service = 'smoke-dual'=2" \
   "SELECT sumMap(buckets) FROM $DB.endpoint_durations WHERE service = 'smoke-dual' AND env = 'smoke-env'={-14:2,-13:4,-12:4}"
-promql() { curl -s -u hud_backend:Backend-pass-1234 localhost:18123/prometheus/api/v1/query --data-urlencode "query=$1" \
-  --data-urlencode database=${DB}_promql --data-urlencode table=metrics | value; }
+# PromQL's aggregate functions are a private preview setting, off for the admin too.
+promql() { curl -s -u default:admin-pass localhost:18123/prometheus/api/v1/query --data-urlencode "query=$1" \
+  --data-urlencode database=${DB}_promql --data-urlencode table=metrics -d enable_time_series_aggregate_functions=1 | value; }
 # Buckets -14 and -13 are in (2^-4, 2^-3] s, -12 in (2^-3, 2^-2]; the series are cumulative over both deltas
 S='job="smoke-dual",instance="pod-a",deployment_environment_name="smoke-env",code_flow_name="http|/x|get"'
 poll promql smoke-dual \

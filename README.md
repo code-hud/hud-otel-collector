@@ -138,7 +138,7 @@ ClickHouse's Prometheus remote-write endpoint, for PromQL (`/prometheus/api/v1/q
 exponential histograms as classic `le` buckets on powers of 2 (the table drops native histograms). That pipeline keeps
 `delta_to_cumulative` state, so a pod's metrics must keep reaching one replica. The endpoint is server config
 (`test/clickhouse-prometheus.xml`) on self-managed servers, and only exists on Cloud services in the PromQL private
-preview. Its grants and settings are in `playground/clickstack/setup-promql.sql`, apart from the SQL-only
+preview. Its grants are in `playground/clickstack/setup-promql.sql`, apart from the SQL-only
 `setup.sql`. `playground/clickstack/` runs it end to end with HyperDX and the node SDK; the
 dashboards are in [hud-clickhouse-resources](https://github.com/code-hud/hud-clickhouse-resources).
 
@@ -200,7 +200,8 @@ Rules for `hud-migrate/schema/*.sql`, as in ClickStack:
 - The customer's admin setup (`playground/clickstack/setup.sql`, plus `setup-promql.sql` with `HUD_TIMESERIES_TABLE=true`)
   grants on the same database name: replace its `${HUD_CLICKHOUSE_DATABASE}` placeholder, or run `setup.sh`, which
   validates the name and substitutes it. The grants stay scoped to that database and its `_collector` sibling (and
-  `_promql`, from `setup-promql.sql`); with another name, `hud-migrate` is denied.
+  `_promql`, from `setup-promql.sql`); with another name, `hud-migrate` is denied. It creates no read user: Hud reads
+  through the ClickHouse Cloud remote MCP, and the playground as the admin.
 - **Create only.** Statements are `CREATE ... IF NOT EXISTS` (database, tables, views) or `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`; never
   `CREATE OR REPLACE`, `MODIFY`, `RENAME` or `DROP`. Changing an existing object means a new object under a new name.
   `TestSchemaIsCreateOnly` (run by `make smoke`) fails on anything else, and the migrator's grants (`CREATE
