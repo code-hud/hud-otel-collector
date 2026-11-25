@@ -11,4 +11,4 @@ CREATE DATABASE IF NOT EXISTS ${DATABASE}_promql;
 CREATE TABLE IF NOT EXISTS ${DATABASE}_promql.metrics
 ENGINE = TimeSeries
 SETTINGS enable_time_series_table = 1
-COMMENT 'Prometheus-style TimeSeries table for a collector that remote-writes the SDK metrics to it (prometheus_remote_write, test/timeseries.yaml), read with PromQL. Created only with HUD_TIMESERIES_TABLE=true. The engine keeps the data in its inner tables (samples, tags, metric families), no TTL.';
+COMMENT 'Prometheus-style TimeSeries table for a collector that remote-writes the SDK metrics to it (prometheus_remote_write, config/clickhouse/timeseries.yaml), read with PromQL. Created only with HUD_TIMESERIES_TABLE=true. The engine keeps the data in its inner tables (samples, tags, metric families), no TTL.';

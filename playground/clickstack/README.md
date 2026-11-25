@@ -1,7 +1,7 @@
 # ClickStack playground
 
 ClickHouse with the customer setup script (`setup.sql`, run by `setup.sh`; plus `setup-promql.sql` in dual mode), `hud-migrate` as an init container, the
-collector on `test/clickhouse.yaml` and `test/collector-telemetry.yaml`, HyperDX, and the node SDK's sample app against its fake Hud backend.
+collector on `config/clickhouse/clickhouse.yaml` and `config/clickhouse/collector-telemetry.yaml`, HyperDX, and the node SDK's sample app against its fake Hud backend.
 
 ## Run
 
@@ -48,7 +48,7 @@ above. Changing it needs `docker compose down -v` first, since the setup runs on
 
 With `HUD_SCHEMA_MANAGED=false docker compose up -d`, the init container exits without touching ClickHouse.
 
-The collector also writes its own metrics (`test/collector-telemetry.yaml`, every 30 s) into `hud_otel_collector`,
+The collector also writes its own metrics (`config/clickhouse/collector-telemetry.yaml`, every 30 s) into `hud_otel_collector`,
 with `deployment.environment.name` `playground`:
 
 ```sh
@@ -59,7 +59,7 @@ curl -s -u default:admin-pass localhost:8123 --data-binary "
 
 `HUD_COLLECTOR_TELEMETRY=false docker compose up -d` turns that off, in `hud-migrate` and the collector alike.
 
-Dual mode, the same metrics also in the `metrics` `TimeSeries` table of `hud_otel_promql` for PromQL (`test/timeseries.yaml`):
+Dual mode, the same metrics also in the `metrics` `TimeSeries` table of `hud_otel_promql` for PromQL (`config/clickhouse/timeseries.yaml`):
 `docker compose -f docker-compose.yaml -f timeseries.compose.yaml up -d`. ClickHouse's setup then also runs
 `setup-promql.sql` (`HUD_TIMESERIES_TABLE=true`): the `_promql` grants of the migrator and the collector, which a
 SQL-only install leaves out. On a ClickHouse already set up without it, `docker compose down -v` first, or run it on the running server:

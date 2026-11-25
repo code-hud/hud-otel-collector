@@ -2,12 +2,13 @@
 # Five fake pods (three on deployment v1, two on v2) send deltas concurrently. Function metrics must merge
 # into one Prometheus series per deployment holding its sum; flow and process metrics must stay one series per pod.
 # Then the ClickHouse path: hud-migrate creates the schema, and deltas (with a calling flow, an issue and function
-# errors), an exponential histogram, process gauges and a log sent through test/clickhouse.yaml must come out of the SQL
-# tables and otel_logs exactly, a metric no view reads must stay in otel_metrics_*, a flow's feature flag combinations
-# must stay separate rows in the endpoint tables, and a retried insert must count once.
+# errors), an exponential histogram, process gauges and a log sent through config/clickhouse/clickhouse.yaml must come
+# out of the SQL tables and otel_logs exactly, a metric no view reads must stay in otel_metrics_*, a flow's feature flag
+# combinations must stay separate rows in the endpoint tables, and a retried insert must count once.
 # The server starts with the SQL-only setup (setup.sql), which must grant nothing on the PromQL database. Last,
-# setup.sh again with HUD_TIMESERIES_TABLE=true adds setup-promql.sql, and test/timeseries.yaml on top: the same
-# metrics also in the TimeSeries table, histograms as le buckets in PromQL.
+# setup.sh again with HUD_TIMESERIES_TABLE=true adds setup-promql.sql, and config/clickhouse/timeseries.yaml on top: the
+# same metrics also in the TimeSeries table, histograms as le buckets in PromQL.
+# Only test material lives here (merge.yaml, the ClickHouse server XMLs); the collector configs are in config/.
 set -euo pipefail
 
 IMAGE=${IMAGE:-hud-otelcol:dev}
@@ -17,6 +18,7 @@ GO_IMAGE=${GO_IMAGE:-golang:1.26}
 NET=hud-otelcol-smoke
 DIR=$(cd "$(dirname "$0")" && pwd)
 PLAYGROUND=$DIR/../playground/clickstack
+CONFIG=$DIR/../config
 
 cleanup() {
   docker rm -f smoke-collector smoke-prometheus smoke-clickhouse smoke-clickstack smoke-clickstack-tls smoke-dual >/dev/null 2>&1 || true
@@ -34,13 +36,13 @@ for c in otlp batch filter transform delta_to_cumulative interval prometheus_rem
 done
 
 echo "--- validate AMP and ClickHouse configs"
-docker run --rm -v "$DIR:/cfg:ro" -e AWS_ACCESS_KEY_ID=dummy -e AWS_SECRET_ACCESS_KEY=dummy \
+docker run --rm -v "$CONFIG/amp:/cfg:ro" -e AWS_ACCESS_KEY_ID=dummy -e AWS_SECRET_ACCESS_KEY=dummy \
   "$IMAGE" validate --config /cfg/amp.yaml
-docker run --rm -v "$DIR:/cfg:ro" -e CLICKHOUSE_ENDPOINT=http://localhost:8123 -e CLICKHOUSE_USER=u -e CLICKHOUSE_PASSWORD=p \
+docker run --rm -v "$CONFIG/clickhouse:/cfg:ro" -e CLICKHOUSE_ENDPOINT=http://localhost:8123 -e CLICKHOUSE_USER=u -e CLICKHOUSE_PASSWORD=p \
   "$IMAGE" validate --config /cfg/clickhouse.yaml
-docker run --rm -v "$DIR:/cfg:ro" -e CLICKHOUSE_ENDPOINT=http://localhost:8123 -e CLICKHOUSE_USER=u -e CLICKHOUSE_PASSWORD=p \
+docker run --rm -v "$CONFIG/clickhouse:/cfg:ro" -e CLICKHOUSE_ENDPOINT=http://localhost:8123 -e CLICKHOUSE_USER=u -e CLICKHOUSE_PASSWORD=p \
   "$IMAGE" validate --config /cfg/clickhouse.yaml --config /cfg/timeseries.yaml
-docker run --rm -v "$DIR:/cfg:ro" -e CLICKHOUSE_ENDPOINT=http://localhost:8123 -e CLICKHOUSE_USER=u -e CLICKHOUSE_PASSWORD=p \
+docker run --rm -v "$CONFIG/clickhouse:/cfg:ro" -e CLICKHOUSE_ENDPOINT=http://localhost:8123 -e CLICKHOUSE_USER=u -e CLICKHOUSE_PASSWORD=p \
   "$IMAGE" validate --config /cfg/clickhouse.yaml --config /cfg/collector-telemetry.yaml
 
 echo "--- start Prometheus and collector"
@@ -167,7 +169,7 @@ docker run --rm --network $NET "${MIGRATOR[@]}" -v "$DIR/../hud-migrate:/src" -w
   -v hud-otelcol-gomod:/go/pkg/mod -v hud-otelcol-gocache:/root/.cache/go-build "$GO_IMAGE" go test -count=1 ./...
 
 echo "--- ClickHouse collector: two deltas of a counter and of a scale-2 exponential histogram per flow and function (scale 3 for queue latency, next to a Kafka run), function errors, process gauges and memory, a metric no view reads, one log, 3-minute deltas across an hour, a 2-hour delta; no key twice in a fine table"
-docker run -d --name smoke-clickstack --network $NET -p 14319:4318 -v "$DIR:/cfg:ro" \
+docker run -d --name smoke-clickstack --network $NET -p 14319:4318 -v "$CONFIG/clickhouse:/cfg:ro" \
   -e CLICKHOUSE_ENDPOINT=http://smoke-clickhouse:8123 -e CLICKHOUSE_USER=hud_collector -e CLICKHOUSE_PASSWORD=Collector-pass-1234 \
   -e HUD_CLICKHOUSE_DATABASE=$DB -e HUD_COLLECTOR_ENVIRONMENT=smoke-env "$IMAGE" \
   --config /cfg/clickhouse.yaml --config /cfg/collector-telemetry.yaml >/dev/null
@@ -379,7 +381,7 @@ echo "--- TLS: hud-migrate and the collector on the https endpoint form Cloud us
 TLS=(-e CLICKHOUSE_TLS_INSECURE_SKIP_VERIFY=true -e HUD_CLICKHOUSE_DATABASE=$DB)
 docker run --rm --network $NET -e CLICKHOUSE_ENDPOINT=https://smoke-clickhouse:8443/ -e CLICKHOUSE_USER=hud_migrator \
   -e CLICKHOUSE_PASSWORD=Migrator-pass-1234 "${TLS[@]}" --entrypoint /hud-migrate "$IMAGE" up
-docker run -d --name smoke-clickstack-tls --network $NET -p 14320:4318 -v "$DIR:/cfg:ro" "${TLS[@]}" \
+docker run -d --name smoke-clickstack-tls --network $NET -p 14320:4318 -v "$CONFIG/clickhouse:/cfg:ro" "${TLS[@]}" \
   -e CLICKHOUSE_ENDPOINT=https://smoke-clickhouse:8443 -e CLICKHOUSE_USER=hud_collector -e CLICKHOUSE_PASSWORD=Collector-pass-1234 \
   "$IMAGE" --config /cfg/clickhouse.yaml >/dev/null
 for _ in $(seq 30); do curl -s -o /dev/null localhost:14320 && break; sleep 1; done
@@ -400,7 +402,7 @@ docker exec -e HUD_TIMESERIES_TABLE=true smoke-clickhouse /docker-entrypoint-ini
 
 echo "--- dual: hud-migrate with HUD_TIMESERIES_TABLE=true adds the metrics table in ${DB}_promql, the SQL tables stay in $DB; clickhouse.yaml + timeseries.yaml fill the SQL tables and, through remote write, the TimeSeries table, read with PromQL as the admin: the scale-2 histogram as le buckets"
 docker run --rm --network $NET "${MIGRATOR[@]}" -e HUD_TIMESERIES_TABLE=true --entrypoint /hud-migrate "$IMAGE" up
-docker run -d --name smoke-dual --network $NET -p 14321:4318 -v "$DIR:/cfg:ro" -e HUD_CLICKHOUSE_DATABASE=$DB \
+docker run -d --name smoke-dual --network $NET -p 14321:4318 -v "$CONFIG/clickhouse:/cfg:ro" -e HUD_CLICKHOUSE_DATABASE=$DB \
   -e CLICKHOUSE_ENDPOINT=http://smoke-clickhouse:8123 -e CLICKHOUSE_USER=hud_collector -e CLICKHOUSE_PASSWORD=Collector-pass-1234 \
   "$IMAGE" --config /cfg/clickhouse.yaml --config /cfg/timeseries.yaml >/dev/null
 for _ in $(seq 30); do curl -s -o /dev/null localhost:14321 && break; sleep 1; done

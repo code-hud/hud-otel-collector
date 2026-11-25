@@ -31,8 +31,8 @@
 -- The views of one insert are not atomic: a failing view can leave others written, and the collector retries the whole
 -- batch. Every table below keeps the hashes of its last 10000 inserts (non_replicated_deduplication_window, or
 -- replicated_deduplication_window on replicated and Cloud tables), and the collector inserts synchronously with
--- deduplicate_blocks_in_dependent_materialized_views (test/clickhouse.yaml), so a retry only writes what is missing
--- instead of counting the rest twice.
+-- deduplicate_blocks_in_dependent_materialized_views (config/clickhouse/clickhouse.yaml), so a retry only writes what
+-- is missing instead of counting the rest twice.
 --   endpoint_durations  by flow, SDK session (service.instance.id), deployment, status, method, route, end reason and
 --                       queue: code.flow.duration (duration_count: the runs, errors are its 5xx ones) and
 --                       hud.flow.e2e.duration (e2e_*: queue latency from publish to the end of the flow)
@@ -40,7 +40,8 @@
 --                       hud.flow.messages, hud.flow.issues by fingerprint and user error, hud.flow.calling_flows by
 --                       the flow that called it (parent) and started it (root)
 --   process_metrics     CPU, memory, event loop and uptime by SDK session and pod. The collector turns the memory sums
---                       into gauges (test/clickhouse.yaml), so they share the other gauges' row.
+--                       into gauges (config/clickhouse/clickhouse.yaml), so they share the other gauges'
+--                       row.
 --   function_durations  code.function.call.duration (sampled, so duration_count can be below calls) by function,
 --                       file, caller function (name and file), flow, content hash and deployment
 --   function_counters   code.function.calls and code.function.errors by the same and error type

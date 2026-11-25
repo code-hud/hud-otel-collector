@@ -1,6 +1,6 @@
 <!-- Prometheus remote write and PromQL on the HTTP port (/prometheus/api/v1/write, /query, ...), for the TimeSeries
-     table and test/timeseries.yaml. Requests name the table (?database=...&table=metrics) and authenticate like any
-     HTTP request. Self-managed only: on Cloud the private preview configures it. -->
+     table and config/clickhouse/timeseries.yaml. Requests name the table (?database=...&table=metrics) and
+     authenticate like any HTTP request. Self-managed only: on Cloud the private preview configures it. -->
 <clickhouse>
     <http_handlers>
         <defaults/>
