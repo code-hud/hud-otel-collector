@@ -374,6 +374,13 @@ INSERT INTO $UPGRADE_DB.endpoint_metrics_lean_1h (hour, service, flow, duration_
 SELECT toStartOfHour(now() - INTERVAL 95 DAY), 'smoke-legacy-history', toString(n), n, n, flags
 FROM values('n UInt64, flags String', (1, ''), (2, 'a=true'), (4, 'a=true,b=false'), (8, '__hud_other__'));
 EOF
+for first_day in 1 61; do
+  upgrade_sql <<EOF
+INSERT INTO $UPGRADE_DB.endpoint_metrics_lean_1h (hour, service, duration_count)
+SELECT toStartOfHour(now()) - toIntervalDay(number), 'smoke-legacy-partitions', 1
+FROM numbers($first_day, 60);
+EOF
+done
 MIGRATION_DB="$UPGRADE_DB" migrate up
 assert_backfill() {
   local table service metric expected actual
@@ -392,7 +399,12 @@ assert_backfill() {
        WHERE service = '$service' GROUP BY feature_flags)")
     [ "$actual" = "$expected" ] || { echo "FAIL: $table has $actual after backfill, want $expected"; exit 1; }
   done
+  local history
+  history=$(sql "SELECT uniqExact(toDate(hour)), sum(duration_count) FROM $UPGRADE_DB.endpoint_metrics_lean_1h_v2
+    WHERE service = 'smoke-legacy-partitions' FORMAT CSV")
+  [ "$history" = "120,120" ] || { echo "FAIL: lean hourly backfill has $history, want 120 partitions and runs"; exit 1; }
   echo "PASS: legacy flag buckets and totals in all four v2 endpoint tables"
+  echo "PASS: lean hourly backfill retains all 120 daily partitions"
 }
 assert_backfill
 

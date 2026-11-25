@@ -52,7 +52,8 @@ AS SELECT t, env, service, flow, flow_type, method, route, status_code, end_reas
     if(feature_flags IN ('', '__hud_other__'), feature_flags, '__hud_legacy__') AS feature_flags,
     attributes, attribute_counts
 FROM ${DATABASE}.endpoint_durations
-WHERE t >= now() - INTERVAL 30 DAY;
+WHERE t >= now() - INTERVAL 30 DAY
+SETTINGS max_partitions_per_insert_block = 0;
 
 -- A flow's counters, all by method, route, status code, end reason and destination as the run had them, and each by
 -- its own columns, '' in the others' rows: issues by fingerprint, framework result, caught and user error,
@@ -108,7 +109,8 @@ AS SELECT t, env, service, flow, flow_type, method, route, status_code, end_reas
     arraySum(array(COLUMNS('^(calling_runs|runs_by_caller)\\z'))) AS runs_by_caller, last_seen,
     if(feature_flags IN ('', '__hud_other__'), feature_flags, '__hud_legacy__') AS feature_flags
 FROM ${DATABASE}.endpoint_counters
-WHERE t >= now() - INTERVAL 30 DAY;
+WHERE t >= now() - INTERVAL 30 DAY
+SETTINGS max_partitions_per_insert_block = 0;
 
 -- Both endpoint tables as one, at the fine grain, like endpoint_metrics_1h_v2: duration rows carry '' and 0 in the
 -- counter columns and counter rows the reverse, so sum over both. calls is the runs (flows aren't sampled, so
@@ -200,7 +202,8 @@ AS SELECT hour, env, service, flow, flow_type, method, route, status_code, end_r
     if(feature_flags IN ('', '__hud_other__'), feature_flags, '__hud_legacy__') AS feature_flags,
     attributes, attribute_counts
 FROM ${DATABASE}.endpoint_metrics_1h
-WHERE hour >= toStartOfHour(now() - INTERVAL 90 DAY);
+WHERE hour >= toStartOfHour(now() - INTERVAL 90 DAY)
+SETTINGS max_partitions_per_insert_block = 0;
 
 CREATE TABLE IF NOT EXISTS ${DATABASE}.endpoint_metrics_lean_1h_v2
 (
@@ -265,7 +268,8 @@ AS SELECT hour, env, service, flow, flow_type, method, route, status_code, end_r
     if(feature_flags IN ('', '__hud_other__'), feature_flags, '__hud_legacy__') AS feature_flags,
     attributes, attribute_counts
 FROM ${DATABASE}.endpoint_metrics_lean_1h
-WHERE hour >= toStartOfHour(now() - INTERVAL 180 DAY);
+WHERE hour >= toStartOfHour(now() - INTERVAL 180 DAY)
+SETTINGS max_partitions_per_insert_block = 0;
 CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.endpoint_metrics_1h_v2_from_durations_mv TO ${DATABASE}.endpoint_metrics_1h_v2
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
 SELECT toStartOfHour(t) AS hour, env, service, flow, flow_type, method, route, status_code, end_reason, destination, deployment,
