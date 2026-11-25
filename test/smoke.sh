@@ -5,7 +5,9 @@
 # errors), an exponential histogram, process gauges and a log sent through test/clickhouse.yaml must come out of the SQL
 # tables and otel_logs exactly, a metric no view reads must stay in otel_metrics_*, a flow's feature flag combinations
 # must stay separate rows in the endpoint tables, and a retried insert must count once.
-# Last, test/timeseries.yaml on top: the same metrics also in the TimeSeries table, histograms as le buckets in PromQL.
+# The server starts with the SQL-only setup (setup.sql), which must grant nothing PromQL needs. Last, setup.sh again with
+# HUD_TIMESERIES_TABLE=true adds setup-promql.sql, and test/timeseries.yaml on top: the same metrics also in the
+# TimeSeries table, histograms as le buckets in PromQL.
 set -euo pipefail
 
 IMAGE=${IMAGE:-hud-otelcol:dev}
@@ -112,7 +114,8 @@ poll query smoke-collector "${checks[@]}"
 # A non-default database name, so the setup script, hud-migrate and the collector config all have to follow it
 DB=hud_otel_smoke
 echo "--- ClickHouse: the server with the playground's setup script, database $DB"
-SETUP=(-v "$PLAYGROUND/setup.sh:/docker-entrypoint-initdb.d/setup.sh:ro" -v "$PLAYGROUND/setup.sql:/hud/setup.sql:ro")
+SETUP=(-v "$PLAYGROUND/setup.sh:/docker-entrypoint-initdb.d/setup.sh:ro" -v "$PLAYGROUND/setup.sql:/hud/setup.sql:ro"
+  -v "$PLAYGROUND/setup-promql.sql:/hud/setup-promql.sql:ro")
 out=$(docker run --rm "${SETUP[@]}" -e "HUD_CLICKHOUSE_DATABASE=x; DROP USER y" \
   --entrypoint /docker-entrypoint-initdb.d/setup.sh "$CLICKHOUSE_IMAGE" 2>&1 || true)
 grep -q "not a plain identifier" <<<"$out" || { echo "FAIL: setup.sh took an unsafe database name: $out"; exit 1; }
@@ -132,6 +135,12 @@ done
 MIGRATOR=(-e CLICKHOUSE_ENDPOINT=tcp://smoke-clickhouse:9000 -e CLICKHOUSE_USER=hud_migrator -e CLICKHOUSE_PASSWORD=Migrator-pass-1234
   -e HUD_CLICKHOUSE_DATABASE=$DB)
 migrate() { docker run --rm --network $NET "${MIGRATOR[@]}" --entrypoint /hud-migrate "$IMAGE" "$@"; }
+
+echo "--- SQL-only setup: no ${DB}_promql grant, CREATE TEMPORARY TABLE or PromQL settings profile"
+admin() { docker exec smoke-clickhouse clickhouse-client --password admin-pass -q "$1"; }
+got=$(admin "SELECT count() FROM system.grants WHERE database = '${DB}_promql' OR access_type = 'CREATE TEMPORARY TABLE'")
+got=$got/$(admin "SELECT count() FROM system.settings_profiles WHERE name = 'hud_read_promql_profile'")
+[ "$got" = 0/0 ] || { echo "FAIL: setup.sql alone granted PromQL objects (grants/profiles: $got)"; exit 1; }
 
 echo "--- hud-migrate: HUD_SCHEMA_MANAGED=false doesn't connect, 4 concurrent up create $DB, grants refuse DROP, ADD INDEX and other databases, go test (incl. the create-only check)"
 docker run --rm -e HUD_SCHEMA_MANAGED=false --entrypoint /hud-migrate "$IMAGE" up
@@ -154,7 +163,7 @@ tables=$(curl -s -u hud_backend:Backend-pass-1234 localhost:18123 \
 want="['otel_metrics_exponential_histogram','otel_metrics_gauge','otel_metrics_histogram','otel_metrics_sum','otel_metrics_summary']"
 [ "$tables" = "$want" ] || { echo "FAIL: ${DB}_collector has $tables after up, want $want"; exit 1; }
 for q in "DROP TABLE $DB.otel_logs" "ALTER TABLE $DB.otel_logs ADD INDEX smoke_idx Body TYPE bloom_filter" \
-  "DROP DATABASE $DB" "CREATE DATABASE hud_otel"; do
+  "DROP DATABASE $DB" "CREATE DATABASE hud_otel" "CREATE DATABASE ${DB}_promql"; do
   curl -s -u hud_migrator:Migrator-pass-1234 localhost:18123 --data-binary "$q" | grep -q ACCESS_DENIED || { echo "FAIL: hud_migrator may run: $q"; exit 1; }
 done
 docker run --rm --network $NET "${MIGRATOR[@]}" -v "$DIR/../hud-migrate:/src" -w /src \
@@ -388,6 +397,9 @@ curl -sf -X POST localhost:14320/v1/logs -H 'Content-Type: application/json' -d 
 EOF
 poll sql smoke-clickstack-tls "SELECT sum(messages) FROM $DB.endpoint_counters WHERE service = 'smoke-tls'=3"
 poll sql smoke-clickstack-tls "SELECT count() FROM $DB.otel_logs WHERE ServiceName = 'smoke-tls'=1"
+
+echo "--- PromQL setup: setup.sh again, with HUD_TIMESERIES_TABLE=true, on the running server adds setup-promql.sql"
+docker exec -e HUD_TIMESERIES_TABLE=true smoke-clickhouse /docker-entrypoint-initdb.d/setup.sh
 
 echo "--- dual: hud-migrate with HUD_TIMESERIES_TABLE=true adds the metrics table in ${DB}_promql, the SQL tables stay in $DB; clickhouse.yaml + timeseries.yaml fill the SQL tables and, through remote write, the TimeSeries table, read with PromQL as hud_backend: the scale-2 histogram as le buckets"
 docker run --rm --network $NET "${MIGRATOR[@]}" -e HUD_TIMESERIES_TABLE=true --entrypoint /hud-migrate "$IMAGE" up

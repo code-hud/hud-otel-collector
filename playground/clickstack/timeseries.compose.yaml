@@ -1,8 +1,12 @@
 # Dual mode: the metrics also go into the metrics TimeSeries table of <database>_promql, read with PromQL (test/timeseries.yaml).
+# ClickHouse's setup also runs setup-promql.sql, the PromQL grants and settings.
 # docker compose -f docker-compose.yaml -f timeseries.compose.yaml up -d
 services:
   clickhouse:
+    environment:
+      HUD_TIMESERIES_TABLE: "true"
     volumes:
+      - ./setup-promql.sql:/hud/setup-promql.sql:ro
       - ../../test/clickhouse-prometheus.xml:/etc/clickhouse-server/config.d/prometheus.xml:ro
   hud-migrate:
     environment:
