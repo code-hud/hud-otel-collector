@@ -31,12 +31,15 @@ services:
       HUD_CLICKHOUSE_DATABASE: ${HUD_CLICKHOUSE_DATABASE:-hud_otel}
       HUD_SCHEMA_MANAGED: ${HUD_SCHEMA_MANAGED:-true}
       HUD_TIMESERIES_TABLE: ${HUD_TIMESERIES_TABLE:-false}
+      HUD_COLLECTOR_TELEMETRY: ${HUD_COLLECTOR_TELEMETRY:-true}
     depends_on:
       clickhouse: {condition: service_healthy}
 
+  # Self-telemetry (collector-telemetry.yaml) into <database>_collector; HUD_COLLECTOR_TELEMETRY=false turns it off here
+  # and in hud-migrate.
   collector:
     image: ${COLLECTOR_IMAGE:-hud-otelcol:dev}
-    command: ["--config", "/cfg/clickhouse.yaml"]
+    command: ["--config", "/cfg/clickhouse.yaml", "--config", "/cfg/collector-telemetry.yaml"]
     volumes:
       - ../../test:/cfg:ro
     environment:
@@ -44,6 +47,8 @@ services:
       CLICKHOUSE_USER: hud_collector
       CLICKHOUSE_PASSWORD: Collector-pass-1234
       HUD_CLICKHOUSE_DATABASE: ${HUD_CLICKHOUSE_DATABASE:-hud_otel}
+      HUD_COLLECTOR_TELEMETRY: ${HUD_COLLECTOR_TELEMETRY:-true}
+      HUD_COLLECTOR_ENVIRONMENT: playground
       EXPORT_INTERVAL: 10s
     ports: ["4317:4317", "4318:4318", "13133:13133"]
     depends_on:

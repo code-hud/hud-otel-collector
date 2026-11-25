@@ -1,0 +1,54 @@
+# Collector self-telemetry, layered on test/clickhouse.yaml (--config clickhouse.yaml --config collector-telemetry.yaml)
+# and on by default in the playground: the collector's own metrics (level normal) go every 30 s to otlp/self, a receiver
+# on localhost only, and the metrics/self pipeline inserts them into the otel_metrics_* tables of
+# <HUD_CLICKHOUSE_DATABASE>_collector (hud-migrate/schema/0004_collector.sql). That pipeline shares no receiver or
+# exporter with the Hud ones, so no collector metric reaches the Hud tables and no SDK metric reaches these.
+# HUD_COLLECTOR_TELEMETRY=false turns it off: give it to hud-migrate too, which then skips the database, and the
+# pipeline drops every point, so nothing is inserted (the exporter doesn't connect before its first insert).
+# CLICKHOUSE_USER needs INSERT on <database>_collector.*; HUD_COLLECTOR_ENVIRONMENT sets deployment.environment.name.
+receivers:
+  otlp/self:
+    protocols:
+      grpc:
+        endpoint: localhost:4319
+
+processors:
+  filter/self_off:
+    error_mode: ignore
+    metrics:
+      metric:
+        - '"${env:HUD_COLLECTOR_TELEMETRY:-true}" == "false"'
+  batch/self:
+    timeout: 5s
+
+exporters:
+  clickhouse/self:
+    endpoint: ${env:CLICKHOUSE_ENDPOINT}
+    username: ${env:CLICKHOUSE_USER}
+    password: ${env:CLICKHOUSE_PASSWORD}
+    database: ${env:HUD_CLICKHOUSE_DATABASE:-hud_otel}_collector
+    create_schema: false
+    tls:
+      insecure_skip_verify: ${env:CLICKHOUSE_TLS_INSECURE_SKIP_VERIFY:-false}
+
+service:
+  telemetry:
+    resource:
+      attributes:
+        - name: deployment.environment.name
+          value: ${env:HUD_COLLECTOR_ENVIRONMENT:-unknown}
+    metrics:
+      level: normal
+      readers:
+        - periodic:
+            interval: 30000
+            exporter:
+              otlp:
+                protocol: grpc
+                endpoint: http://localhost:4319
+                insecure: true
+  pipelines:
+    metrics/self:
+      receivers: [otlp/self]
+      processors: [filter/self_off, batch/self]
+      exporters: [clickhouse/self]
