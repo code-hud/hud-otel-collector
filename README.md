@@ -103,8 +103,7 @@ collector inserts synchronously with `deduplicate_blocks_in_dependent_materializ
 exporter's default, are not deduplicated), so a retry only writes what is missing. The endpoint and function tables also keep every other attribute the SDK sends, so a new one needs no
 migration. `attributes` holds up to
 1000 values per attribute and `attribute_counts` the runs (calls) per `attribute=value`, keyed by
-`sipHash64('attribute=value') % 100000`; `hud_attribute_count(attribute, value, counts)` (created by the admin's
-`setup.sql`, since functions are server-wide) reads one. A row holds at most 100000 counts; values that share a bucket
+`sipHash64('attribute=value') % 100000`. A row holds at most 100000 counts; values that share a bucket
 add up. Session and host attributes are left out, and so are a function's short name and its flow's type, route and
 methods (the flow's are in its name). The endpoint tables' `feature_flags` is the combination of feature flags a
 flow's runs set (the SDK's `hud.feature_flag.<key>` attributes): the pairs sorted by key, `'fast_path=false,new_checkout=true'`,
@@ -112,7 +111,7 @@ flow's runs set (the SDK's `hud.feature_flag.<key>` attributes): the pairs sorte
 Every listed value with its runs:
 
 ```sql
-SELECT k AS attribute, v AS value, hud_attribute_count(k, v, counts) AS runs
+SELECT k AS attribute, v AS value, counts[sipHash64(concat(k, '=', v)) % 100000] AS runs
 FROM (
   SELECT groupUniqArrayArrayMapMerge(1000)(attributes) AS vals, sumMap(attribute_counts) AS counts
   FROM hud_otel.function_metrics_lean_1h WHERE service = 'checkout' AND hour >= now() - INTERVAL 1 DAY
@@ -125,8 +124,8 @@ ORDER BY attribute, runs DESC
 Every row has the environment (`deployment.environment.name`) and the service (`service.name`).
 Durations are the SDK's base2 exponential histograms at scale 2: `buckets[k]` counts durations in
 (2^(k/4), 2^((k+1)/4)] seconds and leaves out the empty buckets, so any grain answers percentiles, from nanoseconds to
-hours at about ±9%. `hud_duration_quantile(q, sumMap(buckets))` (created by the admin's `setup.sql`) reads one, in
-seconds. Only deltas are summed (the
+hours at about ±9%. The dashboards read one, in seconds, with a `hud_duration_quantile(q, sumMap(buckets))` lambda
+in each query's `WITH`. Only deltas are summed (the
 SDK sends nothing else), except the process gauges and limits. A delta covers the SDK's export interval
 (`aggregationInterval`: 5 minutes by default, set per account) and lands whole at the interval's end (`TimeUnix`): in
 that second's fine row and that hour's hourly row, so a chart is no finer than the export interval.

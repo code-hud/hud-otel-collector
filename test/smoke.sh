@@ -244,7 +244,6 @@ poll sql smoke-clickstack \
   "SELECT sum(messages) FROM $DB.endpoint_counters WHERE service = 'smoke' AND env = 'smoke-env'=2" \
   "SELECT sum(duration_count) FROM $F AND flow = 'http|/x|get' AND status_code = '500' AND deployment = 'd1'=10" \
   "SELECT sumMap(buckets) FROM $F={-14:2,-13:4,-12:4}" \
-  "SELECT round(hud_duration_quantile(0.5, sumMap(buckets)), 4) FROM $F=0.1197" \
   "SELECT sumMap(e2e_buckets) FROM $F AND flow = 'kafka|q|c'={-14:2,-13:4}" \
   "SELECT toString((count(), sum(duration_count), sum(e2e_count))) FROM $F AND flow = 'kafka|q|c'=(2,2,6)" \
   "SELECT sum(duration_count) FROM $DB.endpoint_metrics_lean_1h WHERE service = 'smoke'=12" \
@@ -260,11 +259,11 @@ poll sql smoke-clickstack \
   "SELECT sum(calls) FROM $DB.function_metrics_1h WHERE function = 'f' AND flow = 'http|/x|get' AND caller = 'g' AND caller_file = 'g.ts' AND content_hash = 'h1'=2" \
   "SELECT sum(errors) FROM $DB.function_metrics_lean_1h WHERE function = 'f'=2" \
   "SELECT sum(errors) FROM $DB.function_metrics_1h WHERE function = 'f' AND error_type = 'TypeError'=2" \
-  "SELECT hud_attribute_count('hud.function.kind', 'method', sumMap(attribute_counts)) FROM $DB.function_metrics_lean_1h WHERE function = 'f'=10" \
+  "SELECT sumMap(attribute_counts)[sipHash64('hud.function.kind=method') % 100000] FROM $DB.function_metrics_lean_1h WHERE function = 'f'=10" \
   "SELECT groupUniqArrayArrayMapMerge(1000)(attributes)['telemetry.sdk.version'] FROM $DB.endpoint_metrics_lean_1h WHERE service = 'smoke'=['1.12.5']" \
   "SELECT arraySort(mapKeys(groupUniqArrayArrayMapMerge(1000)(attributes))) FROM $DB.function_metrics_lean_1h WHERE function = 'f'=['hud.function.kind','telemetry.sdk.version']" \
   "SELECT length(sumMap(attribute_counts)) FROM $DB.function_metrics_1h WHERE function = 'f'=2" \
-  "SELECT hud_attribute_count('hud.function.kind', 'method', sumMap(attribute_counts)) FROM $DB.function_durations WHERE function = 'f'=10" \
+  "SELECT sumMap(attribute_counts)[sipHash64('hud.function.kind=method') % 100000] FROM $DB.function_durations WHERE function = 'f'=10" \
   "SELECT groupUniqArrayArrayMap(1000)(attributes)['telemetry.sdk.version'] FROM $F=['1.12.5']" \
   "SELECT countIf(duration_count = 0) FROM $DB.function_metrics_lean_1h FINAL WHERE function = 'f'=0" \
   "SELECT countIf(duration_count = 0) FROM $DB.function_metrics_1h FINAL WHERE function = 'f' AND error_type = ''=0" \
@@ -313,6 +312,11 @@ curl -sf -X POST localhost:14319/v1/metrics -H 'Content-Type: application/json' 
 EOF
 # The tile's query, with its macros filled in for this flow and a range of fine rows and whole hours.
 PANEL=$(cat <<'EOF'
+WITH (q, buckets) -> if(empty(buckets), nan,
+  arrayFirst((v, c) -> c >= q * arrayCumSum(mapValues(buckets))[-1],
+    arrayMap((k, n, c) -> exp2((k + 1 - (c - q * arrayCumSum(mapValues(buckets))[-1]) / n) / 4),
+      mapKeys(buckets), mapValues(buckets), arrayCumSum(mapValues(buckets))),
+    arrayCumSum(mapValues(buckets)))) AS hud_duration_quantile
 SELECT multiIf(ff = '', 'no flags', ff = '__hud_other__', 'other combinations', ff) AS `Feature flags`, round(tn) AS Runs,
     round(100 * tn / sum(tn) OVER (), 1) AS `Distribution %`, round(100 * (te + tio) / tn, 1) AS `Err Rate (%)`,
     round(1000 * td / tn, 1) AS `Avg ms`, round(1e3 * hud_duration_quantile(0.9, tb), 1) AS `P90 ms`, round(ti) AS Issues
