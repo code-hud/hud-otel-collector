@@ -1,29 +1,22 @@
--- The customer's one-time admin setup (clickstack-integration-design.md, "Bootstrap"), with playground passwords.
+-- The customer's one-time admin setup (clickstack-integration-design.md, "Bootstrap"), with playground passwords: the
+-- roles and users of the SQL tables, all a SQL-only install needs. PromQL on the TimeSeries table adds setup-promql.sql.
 -- ${HUD_CLICKHOUSE_DATABASE} is the database name the collector and hud-migrate are configured with (default
 -- hud_otel): replace it before running this by hand, or run setup.sh, which the playground's ClickHouse does on
--- first start. hud-migrate creates the database; the grants name it before it exists. ${HUD_CLICKHOUSE_DATABASE}_promql
--- holds the PromQL metrics TimeSeries table, only created with HUD_TIMESERIES_TABLE=true.
+-- first start. hud-migrate creates the database; the grants name it before it exists.
 -- ${HUD_CLICKHOUSE_DATABASE}_collector holds the collector's own metrics, unless HUD_COLLECTOR_TELEMETRY=false.
 
 CREATE ROLE IF NOT EXISTS hud_write;   GRANT INSERT ON ${HUD_CLICKHOUSE_DATABASE}.* TO hud_write;
-GRANT INSERT ON ${HUD_CLICKHOUSE_DATABASE}_promql.* TO hud_write;
 GRANT INSERT ON ${HUD_CLICKHOUSE_DATABASE}_collector.* TO hud_write;
 CREATE ROLE IF NOT EXISTS hud_read;    GRANT SELECT ON ${HUD_CLICKHOUSE_DATABASE}.* TO hud_read;
-GRANT SELECT ON ${HUD_CLICKHOUSE_DATABASE}_promql.* TO hud_read;
 GRANT SELECT ON ${HUD_CLICKHOUSE_DATABASE}_collector.* TO hud_read;
--- PromQL on the metrics TimeSeries table (/prometheus/api/v1/query) evaluates through a temporary table.
-GRANT CREATE TEMPORARY TABLE ON *.* TO hud_read;
 -- Only what the create-only schema rule allows: the server refuses DROP, RENAME, MODIFY, CREATE OR REPLACE, ADD INDEX.
 CREATE ROLE IF NOT EXISTS hud_ddl;
 GRANT CREATE DATABASE, CREATE TABLE, CREATE VIEW, ALTER ADD COLUMN, SELECT, INSERT ON ${HUD_CLICKHOUSE_DATABASE}.* TO hud_ddl;
-GRANT CREATE DATABASE, CREATE TABLE ON ${HUD_CLICKHOUSE_DATABASE}_promql.* TO hud_ddl;
 GRANT CREATE DATABASE, CREATE TABLE ON ${HUD_CLICKHOUSE_DATABASE}_collector.* TO hud_ddl;
 
 -- readonly = 2: HyperDX sets query settings (max_execution_time, ...) on its queries, which readonly = 1 rejects.
--- PromQL needs enable_time_series_aggregate_functions (private preview).
 CREATE SETTINGS PROFILE IF NOT EXISTS hud_read_profile SETTINGS
-  readonly = 2, max_execution_time = 60, max_memory_usage = 8000000000, max_threads = 8,
-  enable_time_series_aggregate_functions = 1 TO hud_read;
+  readonly = 2, max_execution_time = 60, max_memory_usage = 8000000000, max_threads = 8 TO hud_read;
 CREATE QUOTA IF NOT EXISTS hud_read_quota
   FOR INTERVAL 1 hour MAX queries = 20000, execution_time = 3600, read_bytes = 2000000000000 TO hud_read;
 

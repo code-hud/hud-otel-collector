@@ -1,6 +1,6 @@
 # ClickStack playground
 
-ClickHouse with the customer setup script (`setup.sql`, run by `setup.sh`), `hud-migrate` as an init container, the
+ClickHouse with the customer setup script (`setup.sql`, run by `setup.sh`; plus `setup-promql.sql` in dual mode), `hud-migrate` as an init container, the
 collector on `test/clickhouse.yaml` and `test/collector-telemetry.yaml`, HyperDX, and the node SDK's sample app against its fake Hud backend.
 
 ## Run
@@ -60,7 +60,11 @@ curl -s -u hud_backend:Backend-pass-1234 localhost:8123 --data-binary "
 `HUD_COLLECTOR_TELEMETRY=false docker compose up -d` turns that off, in `hud-migrate` and the collector alike.
 
 Dual mode, the same metrics also in the `metrics` `TimeSeries` table of `hud_otel_promql` for PromQL (`test/timeseries.yaml`):
-`docker compose -f docker-compose.yaml -f timeseries.compose.yaml up -d`. Then, for example, P90 per flow:
+`docker compose -f docker-compose.yaml -f timeseries.compose.yaml up -d`. ClickHouse's setup then also runs
+`setup-promql.sql` (`HUD_TIMESERIES_TABLE=true`): the `_promql` grants, `CREATE TEMPORARY TABLE` for `hud_backend`
+and the `hud_read_promql_profile` settings profile, which a SQL-only install leaves out. On a ClickHouse already set
+up without it, `docker compose down -v` first, or run it on the running server:
+`docker compose exec -e HUD_TIMESERIES_TABLE=true clickhouse /docker-entrypoint-initdb.d/setup.sh`. Then, for example, P90 per flow:
 
 ```sh
 curl -s -u hud_backend:Backend-pass-1234 localhost:8123/prometheus/api/v1/query -d database=hud_otel_promql -d table=metrics \
