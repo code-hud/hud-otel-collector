@@ -38,6 +38,8 @@ docker run --rm -v "$DIR:/cfg:ro" -e CLICKHOUSE_ENDPOINT=http://localhost:8123 -
   "$IMAGE" validate --config /cfg/clickhouse.yaml
 docker run --rm -v "$DIR:/cfg:ro" -e CLICKHOUSE_ENDPOINT=http://localhost:8123 -e CLICKHOUSE_USER=u -e CLICKHOUSE_PASSWORD=p \
   "$IMAGE" validate --config /cfg/clickhouse.yaml --config /cfg/timeseries.yaml
+docker run --rm -v "$DIR:/cfg:ro" -e CLICKHOUSE_ENDPOINT=http://localhost:8123 -e CLICKHOUSE_USER=u -e CLICKHOUSE_PASSWORD=p \
+  "$IMAGE" validate --config /cfg/clickhouse.yaml --config /cfg/collector-telemetry.yaml
 
 echo "--- start Prometheus and collector"
 docker network create $NET >/dev/null
@@ -154,6 +156,10 @@ want="['endpoint_counters','endpoint_counters_mv','endpoint_counters_v2','endpoi
 'otel_metrics_exponential_histogram','otel_metrics_gauge','otel_metrics_histogram','otel_metrics_sum',\
 'otel_metrics_summary','process_metrics','process_metrics_1h','process_metrics_1h_mv','process_metrics_mv']"
 [ "$tables" = "$want" ] || { echo "FAIL: $DB has $tables after up, want $want"; exit 1; }
+tables=$(curl -s -u hud_backend:Backend-pass-1234 localhost:18123 \
+  --data-binary "SELECT groupArray(name) FROM (SELECT name FROM system.tables WHERE database = '${DB}_collector' ORDER BY name)")
+want="['otel_metrics_exponential_histogram','otel_metrics_gauge','otel_metrics_histogram','otel_metrics_sum','otel_metrics_summary']"
+[ "$tables" = "$want" ] || { echo "FAIL: ${DB}_collector has $tables after up, want $want"; exit 1; }
 for q in "DROP TABLE $DB.otel_logs" "ALTER TABLE $DB.otel_logs ADD INDEX smoke_idx Body TYPE bloom_filter" \
   "DROP DATABASE $DB" "CREATE DATABASE hud_otel"; do
   curl -s -u hud_migrator:Migrator-pass-1234 localhost:18123 --data-binary "$q" | grep -q ACCESS_DENIED || { echo "FAIL: hud_migrator may run: $q"; exit 1; }
@@ -164,7 +170,8 @@ docker run --rm --network $NET "${MIGRATOR[@]}" -v "$DIR/../hud-migrate:/src" -w
 echo "--- ClickHouse collector: two deltas of a counter and of a scale-2 exponential histogram per flow and function (scale 3 for queue latency, next to a Kafka run), function errors, process gauges and memory, a metric no view reads, one log, 3-minute deltas across an hour, a 2-hour delta; no key twice in a fine table"
 docker run -d --name smoke-clickstack --network $NET -p 14319:4318 -v "$DIR:/cfg:ro" \
   -e CLICKHOUSE_ENDPOINT=http://smoke-clickhouse:8123 -e CLICKHOUSE_USER=hud_collector -e CLICKHOUSE_PASSWORD=Collector-pass-1234 \
-  -e HUD_CLICKHOUSE_DATABASE=$DB "$IMAGE" --config /cfg/clickhouse.yaml >/dev/null
+  -e HUD_CLICKHOUSE_DATABASE=$DB -e HUD_COLLECTOR_ENVIRONMENT=smoke-env "$IMAGE" \
+  --config /cfg/clickhouse.yaml --config /cfg/collector-telemetry.yaml >/dev/null
 for _ in $(seq 30); do curl -s -o /dev/null localhost:14319 && break; sleep 1; done
 
 # Buckets (2^(k/4), 2^((k+1)/4)] s for k = -14..-12 hold 1, 2 and 2 per delta, so the median of both deltas (the 5th of
@@ -472,6 +479,16 @@ poll sql smoke-clickstack \
   "SELECT sum(messages) FROM $DB.endpoint_counters WHERE service = 'smoke-retry'=10" \
   "SELECT sum(messages) FROM $DB.endpoint_metrics_1h WHERE service = 'smoke-retry'=10" \
   "SELECT sum(messages) FROM $DB.endpoint_metrics_lean_1h WHERE service = 'smoke-retry'=10"
+
+echo "--- self-telemetry: the collector's own metrics land in ${DB}_collector (first export after 30 s), and none in $DB"
+for _ in $(seq 90); do
+  [ "$(sql "SELECT count() FROM ${DB}_collector.otel_metrics_sum WHERE ServiceName = 'hud-otelcol' AND MetricName = 'otelcol_receiver_accepted_metric_points' AND ResourceAttributes['deployment.environment.name'] = 'smoke-env'")" != 0 ] && break
+  sleep 1
+done
+poll sql smoke-clickstack \
+  "SELECT count() > 0 FROM ${DB}_collector.otel_metrics_sum WHERE MetricName = 'otelcol_exporter_sent_metric_points' AND Attributes['exporter'] = 'clickhouse'=1" \
+  "SELECT count() FROM merge('$DB', '^otel_metrics_') WHERE ServiceName = 'hud-otelcol'=0" \
+  "SELECT count() FROM merge('${DB}_collector', '^otel_metrics_') WHERE ServiceName != 'hud-otelcol'=0"
 
 echo "--- TLS: hud-migrate and the collector on the https endpoint form Cloud uses (https://host:8443, trailing slash ok for hud-migrate)"
 TLS=(-e CLICKHOUSE_TLS_INSECURE_SKIP_VERIFY=true -e HUD_CLICKHOUSE_DATABASE=$DB)

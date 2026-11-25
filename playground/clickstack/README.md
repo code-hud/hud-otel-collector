@@ -1,7 +1,7 @@
 # ClickStack playground
 
 ClickHouse with the customer setup script (`setup.sql`, run by `setup.sh`), `hud-migrate` as an init container, the
-collector on `test/clickhouse.yaml`, HyperDX, and the node SDK's sample app against its fake Hud backend.
+collector on `test/clickhouse.yaml` and `test/collector-telemetry.yaml`, HyperDX, and the node SDK's sample app against its fake Hud backend.
 
 ## Run
 
@@ -48,6 +48,17 @@ ClickHouse's setup, `hud-migrate`, the collector and HyperDX's sources all follo
 above. Changing it needs `docker compose down -v` first, since the setup runs on ClickHouse's first start only.
 
 With `HUD_SCHEMA_MANAGED=false docker compose up -d`, the init container exits without touching ClickHouse.
+
+The collector also writes its own metrics (`test/collector-telemetry.yaml`, every 30 s) into `hud_otel_collector`,
+with `deployment.environment.name` `playground`:
+
+```sh
+curl -s -u hud_backend:Backend-pass-1234 localhost:8123 --data-binary "
+  SELECT MetricName, Attributes, Value FROM hud_otel_collector.otel_metrics_sum
+  WHERE MetricName LIKE 'otelcol_receiver_accepted_%' ORDER BY TimeUnix DESC LIMIT 5 FORMAT PrettyCompact"
+```
+
+`HUD_COLLECTOR_TELEMETRY=false docker compose up -d` turns that off, in `hud-migrate` and the collector alike.
 
 Dual mode, the same metrics also in the `metrics` `TimeSeries` table of `hud_otel_promql` for PromQL (`test/timeseries.yaml`):
 `docker compose -f docker-compose.yaml -f timeseries.compose.yaml up -d`. Then, for example, P90 per flow:

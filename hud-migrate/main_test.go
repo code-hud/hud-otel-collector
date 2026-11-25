@@ -113,10 +113,35 @@ func TestUp(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for table, want := range map[string]uint8{"metrics": 0, "otel_logs": 1, "otel_metrics_histogram": 1, "endpoint_durations": 1, "endpoint_metrics_lean_1h": 1, "endpoints": 1} {
+	for table, want := range map[string]uint8{"metrics": 0, "otel_logs": 1, "otel_metrics_histogram": 1, "endpoint_durations": 1,
+		"endpoint_metrics_lean_1h": 1, "endpoints": 1, "_collector.otel_metrics_sum": 1, "_collector.otel_metrics_summary": 1} {
+		if table[0] != '_' {
+			table = "." + table
+		}
 		var exists uint8
-		if err := db.QueryRowContext(ctx, "EXISTS TABLE "+database+"."+table).Scan(&exists); err != nil || exists != want {
-			t.Errorf("%s.%s: exists=%d, want %d, err=%v", database, table, exists, want, err)
+		if err := db.QueryRowContext(ctx, "EXISTS TABLE "+database+table).Scan(&exists); err != nil || exists != want {
+			t.Errorf("%s%s: exists=%d, want %d, err=%v", database, table, exists, want, err)
+		}
+	}
+}
+
+func TestCollectorTelemetryIsOptOut(t *testing.T) {
+	schema, _ := fs.Sub(schemaFS, "schema")
+	db := clickhouse.OpenDB(&clickhouse.Options{})
+	defer db.Close()
+	for env, want := range map[string]bool{"": true, "true": true, "false": false} {
+		t.Setenv("HUD_COLLECTOR_TELEMETRY", env)
+		p, err := provider(db, schema)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := false
+		for _, s := range p.ListSources() {
+			b, _ := fs.ReadFile(schema, s.Path)
+			got = got || strings.Contains(string(b), "${DATABASE}_collector.otel_metrics_sum")
+		}
+		if got != want {
+			t.Errorf("HUD_COLLECTOR_TELEMETRY=%q: creates the collector tables %v, want %v", env, got, want)
 		}
 	}
 }

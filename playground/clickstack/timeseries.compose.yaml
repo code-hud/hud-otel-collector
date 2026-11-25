@@ -8,4 +8,4 @@ services:
     environment:
       HUD_TIMESERIES_TABLE: "true"
   collector:
-    command: ["--config", "/cfg/clickhouse.yaml", "--config", "/cfg/timeseries.yaml"]
+    command: ["--config", "/cfg/clickhouse.yaml", "--config", "/cfg/collector-telemetry.yaml", "--config", "/cfg/timeseries.yaml"]

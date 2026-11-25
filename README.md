@@ -59,7 +59,7 @@ make image   # hud-otelcol:dev
 make smoke   # five fake pods send deltas concurrently; expects one merged Prometheus series with the summed total,
              # then runs hud-migrate and test/clickhouse.yaml against ClickHouse and checks the SQL tables and otel_logs
              # (database hud_otel_smoke), then both with test/timeseries.yaml: the TimeSeries table in hud_otel_smoke_promql,
-             # read with PromQL
+             # read with PromQL; the collector's own metrics land in hud_otel_smoke_collector
 ```
 
 ## ClickHouse
@@ -158,6 +158,41 @@ exponential histograms as classic `le` buckets on powers of 2 (the table drops n
 preview. `playground/clickstack/` runs it end to end with HyperDX and the node SDK; the
 dashboards are in [hud-clickhouse-resources](https://github.com/code-hud/hud-clickhouse-resources).
 
+### Collector self-telemetry
+
+On by default: `test/collector-telemetry.yaml`, layered on `test/clickhouse.yaml` (`--config clickhouse.yaml --config
+collector-telemetry.yaml`, as the playground runs it), makes the collector send its own metrics (`service.telemetry`,
+level `normal`: points each receiver accepted and refused, each exporter sent and failed to send, queue and batch
+sizes, memory, CPU, uptime) every 30 s to `otlp/self`, a receiver on `localhost:4319` only. Its `metrics/self` pipeline
+batches them into the `clickhouse/self` exporter, which writes the `otel_metrics_*` tables of `<database>_collector`
+(`hud_otel_collector`), created by `hud-migrate` (`0004_collector.sql`: the exporter's raw tables, no views, 30 days).
+The pipeline shares no receiver, processor or exporter with the Hud ones, so the Hud tables never get a collector
+metric and `<database>_collector` never gets an SDK one. Points are cumulative (the collector's default), with
+`service.name` `hud-otelcol`, a `service.instance.id` per process, and `deployment.environment.name` from
+`HUD_COLLECTOR_ENVIRONMENT` (default `unknown`). For example, points each exporter failed to send in the last hour:
+
+```sql
+SELECT ResourceAttributes['service.instance.id'] AS replica, Attributes['exporter'] AS exporter, max(Value) - min(Value) AS failed
+FROM hud_otel_collector.otel_metrics_sum
+WHERE MetricName LIKE 'otelcol_exporter_send_failed_%' AND TimeUnix >= now() - INTERVAL 1 HOUR
+GROUP BY ALL
+```
+
+The collector's user needs `INSERT ON <database>_collector.*` (and the migrator `CREATE DATABASE, CREATE TABLE ON
+<database>_collector.*`; one user that does both, as Hud's own deployment, gets all three):
+
+```sql
+GRANT CREATE DATABASE, CREATE TABLE ON <database>_collector.* TO <migrator user>;
+GRANT INSERT ON <database>_collector.* TO <collector user>;
+```
+
+`HUD_COLLECTOR_TELEMETRY=false`, given to both `hud-migrate` and the collector, turns it off: `hud-migrate` skips the
+database, and the pipeline drops every point before the exporter, which never connects, so the grant isn't needed.
+The collector still reads its own metrics in memory and sends them over loopback every 30 s, which costs next to
+nothing; leaving `collector-telemetry.yaml` out of `--config` removes the pipeline entirely.
+
+### Endpoint and hud-migrate
+
 The collector's `CLICKHOUSE_ENDPOINT` is the HTTP interface as `scheme://host:port`, e.g.
 `https://<service>.<region>.aws.clickhouse.cloud:8443` on ClickHouse Cloud. `hud-migrate` accepts the same value (an
 `https://` endpoint implies `secure=true`, and a path is ignored), so one variable can serve both.
@@ -172,13 +207,15 @@ Environment: `CLICKHOUSE_ENDPOINT` (`tcp://`, `http://` or `https://`), `CLICKHO
 `HUD_CLICKHOUSE_DATABASE` (default `hud_otel`; the collector config reads the same variable, like ClickStack's
 `HYPERDX_OTEL_EXPORTER_CLICKHOUSE_DATABASE`) and `HUD_LOGS_TTL_DAYS` (default 30; only applies when `otel_logs` is
 created, later changes don't touch the existing table), `HUD_TIMESERIES_TABLE` (default `false`; `true` also creates
-the `<database>_promql` database and its `metrics` `TimeSeries` table, which needs a server that allows the `TimeSeries` engine). With `HUD_SCHEMA_MANAGED=false` it exits without connecting, for customers who run the same SQL themselves.
+the `<database>_promql` database and its `metrics` `TimeSeries` table, which needs a server that allows the `TimeSeries` engine),
+`HUD_COLLECTOR_TELEMETRY` (default `true`; `false` skips the `<database>_collector` database of the collector's own
+metrics, see [Collector self-telemetry](#collector-self-telemetry)). With `HUD_SCHEMA_MANAGED=false` it exits without connecting, for customers who run the same SQL themselves.
 
 Rules for `hud-migrate/schema/*.sql`, as in ClickStack:
 
 - The customer's admin setup (`playground/clickstack/setup.sql`) grants on the same database name: replace its
   `${HUD_CLICKHOUSE_DATABASE}` placeholder, or run `setup.sh`, which validates the name and substitutes it. The grants
-  stay scoped to that database and its `_promql` sibling; with another name, `hud-migrate` is denied.
+  stay scoped to that database and its `_promql` and `_collector` siblings; with another name, `hud-migrate` is denied.
 - **Create only.** Statements are `CREATE ... IF NOT EXISTS` (database, tables, views) or `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`; never
   `CREATE OR REPLACE`, `MODIFY`, `RENAME` or `DROP`. Changing an existing object means a new object under a new name.
   `TestSchemaIsCreateOnly` (run by `make smoke`) fails on anything else, and the migrator's grants (`CREATE
@@ -186,7 +223,8 @@ Rules for `hud-migrate/schema/*.sql`, as in ClickStack:
   rather than editing a released one.
 - A new column needs a `DEFAULT` or `MATERIALIZED` expression, so older collectors' inserts, which don't name it,
   keep working.
-- Name objects as `${DATABASE}.<name>`, and touch nothing outside that database: the migrator's grants only cover it.
+- Name objects as `${DATABASE}.<name>` (or in its `${DATABASE}_promql` and `${DATABASE}_collector` siblings), and
+  touch nothing outside those databases: the migrator's grants only cover them.
 - Materialized views use `DEFINER = CURRENT_USER SQL SECURITY DEFINER`, so the insert-only collector user can
   write through them.
 
