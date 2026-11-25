@@ -15,7 +15,7 @@ services:
       - ./setup.sql:/hud/setup.sql:ro
     ports: ["8123:8123", "9000:9000"]
     healthcheck:
-      test: clickhouse-client --password admin-pass -q "SELECT count() FROM system.users WHERE name = 'hud_backend'" | grep -q 1
+      test: clickhouse-client --password admin-pass -q "SELECT count() FROM system.users WHERE name = 'hud_migrator'" | grep -q 1
       interval: 2s
       retries: 30
 
@@ -57,7 +57,7 @@ services:
   mongo:
     image: mongo:5.0.32-focal
 
-  # HyperDX reads as hud_backend, the read-only user Hud's backend gets.
+  # HyperDX reads as the admin (default): the setup creates no read user, Hud reads through the ClickHouse Cloud remote MCP.
   hyperdx:
     image: hyperdx/hyperdx:${HYPERDX_VERSION:-2.43.1}
     ports: ["8080:8080", "8000:8000"]
@@ -70,7 +70,7 @@ services:
       MONGO_URI: mongodb://mongo:27017/hyperdx
       USAGE_STATS_ENABLED: "false"
       DEFAULT_CONNECTIONS: >-
-        [{"name":"Hud ClickHouse","host":"http://clickhouse:8123","username":"hud_backend","password":"Backend-pass-1234"}]
+        [{"name":"Hud ClickHouse","host":"http://clickhouse:8123","username":"default","password":"admin-pass"}]
       DEFAULT_SOURCES: >-
         [{"kind":"log","name":"Hud investigations","connection":"Hud ClickHouse",
         "from":{"databaseName":"${HUD_CLICKHOUSE_DATABASE:-hud_otel}","tableName":"otel_logs"},

@@ -20,11 +20,11 @@ investigations appear as the SDK sends them (first error, baselines).
 
 ## Look
 
-Metrics, as `hud_backend` (the read-only user Hud's backend gets): runs and errors per flow over the last hour,
-from the endpoint table:
+Metrics, as the admin (the setup creates no read user; Hud reads through the ClickHouse Cloud remote MCP): runs and
+errors per flow over the last hour, from the endpoint table:
 
 ```sh
-curl -s -u hud_backend:Backend-pass-1234 localhost:8123 --data-binary "
+curl -s -u default:admin-pass localhost:8123 --data-binary "
   SELECT flow, sum(duration_count) AS runs, sumIf(duration_count, startsWith(status_code, '5')) AS errors_5xx
   FROM hud_otel.endpoint_durations WHERE t >= now() - INTERVAL 1 HOUR GROUP BY flow FORMAT PrettyCompact"
 ```
@@ -32,12 +32,12 @@ curl -s -u hud_backend:Backend-pass-1234 localhost:8123 --data-binary "
 Logs:
 
 ```sh
-curl -s -u hud_backend:Backend-pass-1234 localhost:8123 \
+curl -s -u default:admin-pass localhost:8123 \
   --data-binary "SELECT Timestamp, EventName, SeverityText, LogAttributes['code.flow.name'] FROM hud_otel.otel_logs ORDER BY Timestamp DESC LIMIT 10"
 ```
 
 HyperDX: open http://localhost:8080 and create an account (the first one provisions the `Hud ClickHouse` connection,
-as `hud_backend`, and the sources `Hud investigations` (log, `hud_otel.otel_logs`), `Hud endpoints` and
+as the admin, and the sources `Hud investigations` (log, `hud_otel.otel_logs`), `Hud endpoints` and
 `Hud functions` (log, `hud_otel.endpoints` and `hud_otel.functions`, what the dashboards' selectors read)). Search the investigations; for metrics import the Hud
 dashboards ([hud-clickhouse-resources](https://github.com/code-hud/hud-clickhouse-resources)) with a personal API key
 from Team Settings, or add a SQL tile with a query like the one above.
@@ -52,7 +52,7 @@ The collector also writes its own metrics (`test/collector-telemetry.yaml`, ever
 with `deployment.environment.name` `playground`:
 
 ```sh
-curl -s -u hud_backend:Backend-pass-1234 localhost:8123 --data-binary "
+curl -s -u default:admin-pass localhost:8123 --data-binary "
   SELECT MetricName, Attributes, Value FROM hud_otel_collector.otel_metrics_sum
   WHERE MetricName LIKE 'otelcol_receiver_accepted_%' ORDER BY TimeUnix DESC LIMIT 5 FORMAT PrettyCompact"
 ```
@@ -61,13 +61,14 @@ curl -s -u hud_backend:Backend-pass-1234 localhost:8123 --data-binary "
 
 Dual mode, the same metrics also in the `metrics` `TimeSeries` table of `hud_otel_promql` for PromQL (`test/timeseries.yaml`):
 `docker compose -f docker-compose.yaml -f timeseries.compose.yaml up -d`. ClickHouse's setup then also runs
-`setup-promql.sql` (`HUD_TIMESERIES_TABLE=true`): the `_promql` grants, `CREATE TEMPORARY TABLE` for `hud_backend`
-and the `hud_read_promql_profile` settings profile, which a SQL-only install leaves out. On a ClickHouse already set
-up without it, `docker compose down -v` first, or run it on the running server:
-`docker compose exec -e HUD_TIMESERIES_TABLE=true clickhouse /docker-entrypoint-initdb.d/setup.sh`. Then, for example, P90 per flow:
+`setup-promql.sql` (`HUD_TIMESERIES_TABLE=true`): the `_promql` grants of the migrator and the collector, which a
+SQL-only install leaves out. On a ClickHouse already set up without it, `docker compose down -v` first, or run it on the running server:
+`docker compose exec -e HUD_TIMESERIES_TABLE=true clickhouse /docker-entrypoint-initdb.d/setup.sh`. Then, for example,
+P90 per flow (PromQL's aggregate functions need the private preview setting `enable_time_series_aggregate_functions`):
 
 ```sh
-curl -s -u hud_backend:Backend-pass-1234 localhost:8123/prometheus/api/v1/query -d database=hud_otel_promql -d table=metrics \
+curl -s -u default:admin-pass localhost:8123/prometheus/api/v1/query -d database=hud_otel_promql -d table=metrics \
+  -d enable_time_series_aggregate_functions=1 \
   --data-urlencode 'query=histogram_quantile(0.9, sum by (code_flow_name, le) (rate(code_flow_duration_seconds_bucket[5m])))'
 ```
 
