@@ -1,4 +1,4 @@
-# Layered on test/clickhouse.yaml (--config clickhouse.yaml --config timeseries.yaml): the same metrics also go, through
+# Layered on clickhouse.yaml (--config clickhouse.yaml --config timeseries.yaml): the same metrics also go, through
 # ClickHouse's Prometheus remote-write handler (test/clickhouse-prometheus.xml), into the metrics TimeSeries table that
 # hud-migrate creates with HUD_TIMESERIES_TABLE=true, read with PromQL. Its database is the SQL tables' with suffix
 # _promql (hud_otel_promql); same endpoint and user, and INSERT on that database covers the table's inner tables.

@@ -5,8 +5,8 @@
 -- Collector self-telemetry: the collector's own metrics (service.telemetry, level normal: what each receiver
 -- accepted and refused, what each exporter sent and failed to send, queue sizes, batch sizes, memory and CPU), which
 -- it sends every 30 s to itself on a localhost-only receiver and its metrics/self pipeline inserts here through a
--- second clickhouse exporter (test/collector-telemetry.yaml). Its own database, ${DATABASE}_collector, next to the SQL
--- tables', like ${DATABASE}_promql, so the Hud tables never hold a row about the collector. Skipped with
+-- second clickhouse exporter (config/clickhouse/collector-telemetry.yaml). Its own database, ${DATABASE}_collector,
+-- next to the SQL tables', like ${DATABASE}_promql, so the Hud tables never hold a row about the collector. Skipped with
 -- HUD_COLLECTOR_TELEMETRY=false, the switch that also turns the pipeline off.
 -- The exporter's metric tables as its create_schema makes them (clickhouseexporter v0.165.0), with no views: the
 -- points arrive cumulative (the collector's default), every series a running total since its process started (a

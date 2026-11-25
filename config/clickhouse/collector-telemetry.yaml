@@ -1,4 +1,4 @@
-# Collector self-telemetry, layered on test/clickhouse.yaml (--config clickhouse.yaml --config collector-telemetry.yaml)
+# Collector self-telemetry, layered on clickhouse.yaml (--config clickhouse.yaml --config collector-telemetry.yaml)
 # and on by default in the playground: the collector's own metrics (level normal) go every 30 s to otlp/self, a receiver
 # on localhost only, and the metrics/self pipeline inserts them into the otel_metrics_* tables of
 # <HUD_CLICKHOUSE_DATABASE>_collector (hud-migrate/schema/0004_collector.sql). That pipeline shares no receiver or

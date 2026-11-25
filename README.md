@@ -13,6 +13,14 @@ It is not a fork: `manifest.yaml` lists upstream modules at pinned versions, and
 
 Every config written for this distribution also runs on `otel/opentelemetry-collector-contrib`, which is the fallback.
 
+| Path | What |
+| --- | --- |
+| `config/clickhouse/` | ClickHouse (ClickStack) export: `clickhouse.yaml`, plus `timeseries.yaml` (PromQL) and `collector-telemetry.yaml` layered on it, see [ClickHouse](#clickhouse) |
+| `config/amp/` | Amazon Managed Service for Prometheus export with SigV4: `amp.yaml` |
+| `hud-migrate/` | The ClickHouse schema tool and its `schema/*.sql` |
+| `playground/clickstack/` | ClickHouse, HyperDX and the node SDK end to end, with the customer's setup SQL |
+| `test/` | `make smoke` (`smoke.sh`) and its fixtures: `merge.yaml` (pod merging into a local Prometheus) and the ClickHouse server XMLs (the playground mounts `clickhouse-prometheus.xml` too) |
+
 Owner: [@ilansh](https://github.com/ilansh). The owner reviews bump PRs and handles CVE reports.
 
 ## Artifacts
@@ -57,15 +65,15 @@ Only Docker is required; Go runs in a container.
 make build   # OCB generates and compiles _build/hud-otelcol (linux, Docker host arch)
 make image   # hud-otelcol:dev
 make smoke   # five fake pods send deltas concurrently; expects one merged Prometheus series with the summed total,
-             # then runs hud-migrate and test/clickhouse.yaml against ClickHouse and checks the SQL tables and otel_logs
-             # (database hud_otel_smoke, SQL-only setup), then setup-promql.sql and both with test/timeseries.yaml: the
+             # then runs hud-migrate and config/clickhouse/clickhouse.yaml against ClickHouse and checks the SQL tables and otel_logs
+             # (database hud_otel_smoke, SQL-only setup), then setup-promql.sql and both with config/clickhouse/timeseries.yaml: the
              # TimeSeries table in hud_otel_smoke_promql, read with PromQL; the collector's own metrics land in
              # hud_otel_smoke_collector
 ```
 
 ## ClickHouse
 
-`test/clickhouse.yaml` sends the SDK's metrics through the `clickhouse` exporter into its default `otel_metrics_*` tables
+`config/clickhouse/clickhouse.yaml` sends the SDK's metrics through the `clickhouse` exporter into its default `otel_metrics_*` tables
 of `hud_otel`, and logs into `hud_otel.otel_logs`. The `otel_metrics_*` tables are the exporter's own layout (so HyperDX
 reads them as a metrics source) and keep the raw rows 3 days, every metric the SDK sends; materialized views sum each
 insert into the tables below (`hud-migrate/schema/0002_sql.sql`). A time range of those can be rebuilt from the raw rows
@@ -132,8 +140,8 @@ SDK sends nothing else), except the process gauges and limits. A delta covers th
 that second's fine row and that hour's hourly row, so a chart is no finer than the export interval.
 The `metrics` `TimeSeries` table (`0003_timeseries.sql`) is only
 created with `HUD_TIMESERIES_TABLE=true`, in its own database: the SQL tables' name with suffix `_promql`
-(`hud_otel_promql`), which `hud-migrate` creates too. `test/timeseries.yaml`, layered on
-`test/clickhouse.yaml` (`--config clickhouse.yaml --config timeseries.yaml`), also writes the metrics into it through
+(`hud_otel_promql`), which `hud-migrate` creates too. `config/clickhouse/timeseries.yaml`, layered on
+`config/clickhouse/clickhouse.yaml` (`--config clickhouse.yaml --config timeseries.yaml`), also writes the metrics into it through
 ClickHouse's Prometheus remote-write endpoint, for PromQL (`/prometheus/api/v1/query`): deltas made cumulative, and the
 exponential histograms as classic `le` buckets on powers of 2 (the table drops native histograms). That pipeline keeps
 `delta_to_cumulative` state, so a pod's metrics must keep reaching one replica. The endpoint is server config
@@ -144,7 +152,7 @@ dashboards are in [hud-clickhouse-resources](https://github.com/code-hud/hud-cli
 
 ### Collector self-telemetry
 
-On by default: `test/collector-telemetry.yaml`, layered on `test/clickhouse.yaml` (`--config clickhouse.yaml --config
+On by default: `config/clickhouse/collector-telemetry.yaml`, layered on `config/clickhouse/clickhouse.yaml` (`--config clickhouse.yaml --config
 collector-telemetry.yaml`, as the playground runs it), makes the collector send its own metrics (`service.telemetry`,
 level `normal`: points each receiver accepted and refused, each exporter sent and failed to send, queue and batch
 sizes, memory, CPU, uptime) every 30 s to `otlp/self`, a receiver on `localhost:4319` only. Its `metrics/self` pipeline
