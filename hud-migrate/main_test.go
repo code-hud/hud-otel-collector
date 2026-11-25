@@ -68,7 +68,7 @@ func TestSchemaIsCreateOnly(t *testing.T) {
 }
 
 func TestEndpointFeatureFlagRollupsBeforeSources(t *testing.T) {
-	sql, err := schemaFS.ReadFile("schema/0004_endpoint_feature_flags.sql")
+	sql, err := schemaFS.ReadFile("schema/0005_endpoint_feature_flags.sql")
 	if err != nil {
 		t.Fatal(err)
 	}

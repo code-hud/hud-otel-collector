@@ -67,7 +67,7 @@ make smoke   # five fake pods send deltas concurrently; expects one merged Prome
 `test/clickhouse.yaml` sends the SDK's metrics through the `clickhouse` exporter into its default `otel_metrics_*` tables
 of `hud_otel`, and logs into `hud_otel.otel_logs`. The `otel_metrics_*` tables are the exporter's own layout (so HyperDX
 reads them as a metrics source) and keep the raw rows 3 days, every metric the SDK sends; materialized views sum each
-insert into the tables below (`hud-migrate/schema/0002_sql.sql` and `0004_endpoint_feature_flags.sql`). A time range of those can be rebuilt from the raw rows
+insert into the tables below (`hud-migrate/schema/0002_sql.sql` and `0005_endpoint_feature_flags.sql`). A time range of those can be rebuilt from the raw rows
 by running their views' `SELECT`. The collector keeps no state (no pod merging, no `delta_to_cumulative`), so it scales
 out freely: it only batches the inserts.
 
@@ -112,10 +112,10 @@ flow's runs set (the SDK's `hud.feature_flag.<key>` attributes): the pairs sorte
 In the versioned tables, flag names percent-encode `%`, `,` and `=` as `%25`, `%2C` and `%3D` before joining,
 so a key containing the delimiters cannot be mistaken for a different combination.
 
-Migration `0004` creates the same versioned endpoint tables and `endpoint_metrics_union_v2` on a fresh database
+Migration `0005` creates the same versioned endpoint tables and `endpoint_metrics_union_v2` on a fresh database
 or an upgrade (including `v0.165.0-hud.3`). Existing endpoint rows, sorting keys and materialized views stay
 intact; `0002` only adds missing compatibility columns so ClickHouse can validate the legacy definitions on replay.
-On an existing database, pause and drain endpoint metric writes before first running `0004`, and resume them
+On an existing database, pause and drain endpoint metric writes before first running `0005`, and resume them
 only after `hud-migrate up` succeeds. The pause defines the cutover: each new table snapshots the retained rows
 in its legacy counterpart before the live materialized views are installed. This copies both hourly tables directly,
 including history that has aged out of the fine tables, without rolling up the copied fine rows a second time.
