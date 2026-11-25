@@ -236,6 +236,59 @@ TTL hour + toIntervalDay(180)
 SETTINGS ttl_only_drop_parts = 1, non_replicated_deduplication_window = 10000,
     replicated_deduplication_window = 10000
 COMMENT 'Hourly rollup like endpoint_metrics_1h_v2 without the SDK session (instance), so far fewer rows: what most charts read. Read with sum, sumMap, max and groupUniqArrayArrayMapMerge(1000). Filled by endpoint_metrics_lean_1h_v2_from_durations_mv and endpoint_metrics_lean_1h_v2_from_counters_mv, kept 180 days.';
+CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.endpoint_metrics_1h_v2_from_durations_mv TO ${DATABASE}.endpoint_metrics_1h_v2
+DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
+SELECT toStartOfHour(t) AS hour, env, service, flow, flow_type, method, route, status_code, end_reason, destination, deployment,
+    instance, feature_flags,
+    sum(duration_count) AS duration_count, sum(duration_sum) AS duration_sum, sumMap(buckets) AS buckets,
+    sum(e2e_count) AS e2e_count, sum(e2e_sum) AS e2e_sum, sumMap(e2e_buckets) AS e2e_buckets, max(last_seen) AS last_seen,
+    groupUniqArrayArrayMapState(1000)(attributes) AS attributes, sumMap(attribute_counts) AS attribute_counts
+FROM ${DATABASE}.endpoint_durations_v2
+GROUP BY hour, env, service, flow, flow_type, method, route, status_code, end_reason, destination, deployment, instance,
+    feature_flags
+COMMENT 'Rolls each endpoint_durations_v2 insert up by hour into endpoint_metrics_1h_v2.';
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.endpoint_metrics_lean_1h_v2_from_durations_mv TO ${DATABASE}.endpoint_metrics_lean_1h_v2
+DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
+SELECT toStartOfHour(t) AS hour, env, service, flow, flow_type, method, route, status_code, end_reason, destination, deployment,
+    feature_flags,
+    sum(duration_count) AS duration_count, sum(duration_sum) AS duration_sum, sumMap(buckets) AS buckets,
+    sum(e2e_count) AS e2e_count, sum(e2e_sum) AS e2e_sum, sumMap(e2e_buckets) AS e2e_buckets, max(last_seen) AS last_seen,
+    groupUniqArrayArrayMapState(1000)(attributes) AS attributes, sumMap(attribute_counts) AS attribute_counts
+FROM ${DATABASE}.endpoint_durations_v2
+GROUP BY hour, env, service, flow, flow_type, method, route, status_code, end_reason, destination, deployment, feature_flags
+COMMENT 'Rolls each endpoint_durations_v2 insert up by hour into endpoint_metrics_lean_1h_v2.';
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.endpoint_metrics_1h_v2_from_counters_mv TO ${DATABASE}.endpoint_metrics_1h_v2
+DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
+SELECT toStartOfHour(t) AS hour, env, service, flow, flow_type, method, route, status_code, end_reason, destination,
+    deployment, fingerprint, framework_result, caught, user_error, parent_service, parent_flow, parent_multiple,
+    root_service, root_flow, root_multiple, instance, feature_flags,
+    sum(messages) AS messages, sum(issues) AS issues, sum(runs_by_caller) AS runs_by_caller, max(last_seen) AS last_seen
+FROM ${DATABASE}.endpoint_counters_v2
+GROUP BY hour, env, service, flow, flow_type, method, route, status_code, end_reason, destination, deployment, fingerprint,
+    framework_result, caught, user_error, parent_service, parent_flow, parent_multiple, root_service, root_flow,
+    root_multiple, instance, feature_flags
+COMMENT 'Rolls each endpoint_counters_v2 insert up by hour into endpoint_metrics_1h_v2.';
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.endpoint_metrics_lean_1h_v2_from_counters_mv TO ${DATABASE}.endpoint_metrics_lean_1h_v2
+DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
+SELECT toStartOfHour(t) AS hour, env, service, flow, flow_type, method, route, status_code, end_reason, destination,
+    deployment, fingerprint, framework_result, caught, user_error, parent_service, parent_flow, parent_multiple,
+    root_service, root_flow, root_multiple, feature_flags,
+    sum(messages) AS messages, sum(issues) AS issues, sum(runs_by_caller) AS runs_by_caller, max(last_seen) AS last_seen
+FROM ${DATABASE}.endpoint_counters_v2
+GROUP BY hour, env, service, flow, flow_type, method, route, status_code, end_reason, destination, deployment, fingerprint,
+    framework_result, caught, user_error, parent_service, parent_flow, parent_multiple, root_service, root_flow,
+    root_multiple, feature_flags
+COMMENT 'Rolls each endpoint_counters_v2 insert up by hour into endpoint_metrics_lean_1h_v2.';
+
+-- The unversioned union was added after hud.3 and may already exist on later releases.
+CREATE VIEW IF NOT EXISTS ${DATABASE}.endpoint_metrics_union
+DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
+SELECT * FROM ${DATABASE}.endpoint_metrics_union_v2;
+
+-- Enable raw inserts after both hourly rollups are ready to receive them.
 CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.endpoint_durations_v2_mv TO ${DATABASE}.endpoint_durations_v2
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
 WITH MetricName = 'code.flow.duration' AS run,
@@ -298,54 +351,3 @@ GROUP BY t, env, service, flow, flow_type, method, route, status_code, end_reaso
     framework_result, caught, user_error, parent_service, parent_flow, parent_multiple, root_service, root_flow,
     root_multiple, instance, feature_flags
 COMMENT 'Reads hud.flow.messages, hud.flow.issues and hud.flow.calling_flows delta points from otel_metrics_sum and writes them to endpoint_counters_v2, grouped per insert.';
-CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.endpoint_metrics_1h_v2_from_durations_mv TO ${DATABASE}.endpoint_metrics_1h_v2
-DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
-SELECT toStartOfHour(t) AS hour, env, service, flow, flow_type, method, route, status_code, end_reason, destination, deployment,
-    instance, feature_flags,
-    sum(duration_count) AS duration_count, sum(duration_sum) AS duration_sum, sumMap(buckets) AS buckets,
-    sum(e2e_count) AS e2e_count, sum(e2e_sum) AS e2e_sum, sumMap(e2e_buckets) AS e2e_buckets, max(last_seen) AS last_seen,
-    groupUniqArrayArrayMapState(1000)(attributes) AS attributes, sumMap(attribute_counts) AS attribute_counts
-FROM ${DATABASE}.endpoint_durations_v2
-GROUP BY hour, env, service, flow, flow_type, method, route, status_code, end_reason, destination, deployment, instance,
-    feature_flags
-COMMENT 'Rolls each endpoint_durations_v2 insert up by hour into endpoint_metrics_1h_v2.';
-
-CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.endpoint_metrics_lean_1h_v2_from_durations_mv TO ${DATABASE}.endpoint_metrics_lean_1h_v2
-DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
-SELECT toStartOfHour(t) AS hour, env, service, flow, flow_type, method, route, status_code, end_reason, destination, deployment,
-    feature_flags,
-    sum(duration_count) AS duration_count, sum(duration_sum) AS duration_sum, sumMap(buckets) AS buckets,
-    sum(e2e_count) AS e2e_count, sum(e2e_sum) AS e2e_sum, sumMap(e2e_buckets) AS e2e_buckets, max(last_seen) AS last_seen,
-    groupUniqArrayArrayMapState(1000)(attributes) AS attributes, sumMap(attribute_counts) AS attribute_counts
-FROM ${DATABASE}.endpoint_durations_v2
-GROUP BY hour, env, service, flow, flow_type, method, route, status_code, end_reason, destination, deployment, feature_flags
-COMMENT 'Rolls each endpoint_durations_v2 insert up by hour into endpoint_metrics_lean_1h_v2.';
-
-CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.endpoint_metrics_1h_v2_from_counters_mv TO ${DATABASE}.endpoint_metrics_1h_v2
-DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
-SELECT toStartOfHour(t) AS hour, env, service, flow, flow_type, method, route, status_code, end_reason, destination,
-    deployment, fingerprint, framework_result, caught, user_error, parent_service, parent_flow, parent_multiple,
-    root_service, root_flow, root_multiple, instance, feature_flags,
-    sum(messages) AS messages, sum(issues) AS issues, sum(runs_by_caller) AS runs_by_caller, max(last_seen) AS last_seen
-FROM ${DATABASE}.endpoint_counters_v2
-GROUP BY hour, env, service, flow, flow_type, method, route, status_code, end_reason, destination, deployment, fingerprint,
-    framework_result, caught, user_error, parent_service, parent_flow, parent_multiple, root_service, root_flow,
-    root_multiple, instance, feature_flags
-COMMENT 'Rolls each endpoint_counters_v2 insert up by hour into endpoint_metrics_1h_v2.';
-
-CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}.endpoint_metrics_lean_1h_v2_from_counters_mv TO ${DATABASE}.endpoint_metrics_lean_1h_v2
-DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
-SELECT toStartOfHour(t) AS hour, env, service, flow, flow_type, method, route, status_code, end_reason, destination,
-    deployment, fingerprint, framework_result, caught, user_error, parent_service, parent_flow, parent_multiple,
-    root_service, root_flow, root_multiple, feature_flags,
-    sum(messages) AS messages, sum(issues) AS issues, sum(runs_by_caller) AS runs_by_caller, max(last_seen) AS last_seen
-FROM ${DATABASE}.endpoint_counters_v2
-GROUP BY hour, env, service, flow, flow_type, method, route, status_code, end_reason, destination, deployment, fingerprint,
-    framework_result, caught, user_error, parent_service, parent_flow, parent_multiple, root_service, root_flow,
-    root_multiple, feature_flags
-COMMENT 'Rolls each endpoint_counters_v2 insert up by hour into endpoint_metrics_lean_1h_v2.';
-
--- The unversioned union was added after hud.3 and may already exist on later releases.
-CREATE VIEW IF NOT EXISTS ${DATABASE}.endpoint_metrics_union
-DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
-SELECT * FROM ${DATABASE}.endpoint_metrics_union_v2;
