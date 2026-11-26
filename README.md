@@ -17,6 +17,7 @@ Every config written for this distribution also runs on `otel/opentelemetry-coll
 | --- | --- |
 | `config/clickhouse/` | ClickHouse (ClickStack) export: `clickhouse.yaml`, plus `timeseries.yaml` (PromQL) and `collector-telemetry.yaml` layered on it, see [ClickHouse](#clickhouse) |
 | `config/amp/` | Amazon Managed Service for Prometheus export with SigV4: `amp.yaml` |
+| `deploy/` | Deployment examples: `helm-values.yaml` (upstream Helm chart) and `ecs-fargate.yaml` (CloudFormation), see [Deploying](#deploying) |
 | `hud-migrate/` | The ClickHouse schema tool and its `schema/*.sql` |
 | `playground/clickstack/` | ClickHouse, HyperDX and the node SDK end to end, with the customer's setup SQL |
 | `test/` | `make smoke` (`smoke.sh`) and its fixtures: `merge.yaml` (pod merging into a local Prometheus) and the ClickHouse server XMLs (the playground mounts `clickhouse-prometheus.xml` too) |
@@ -52,10 +53,59 @@ cosign verify-blob checksums.txt --bundle checksums.txt.sigstore.json \
 sha256sum --ignore-missing -c checksums.txt
 ```
 
-## Deploying to your AWS account
+## Deploying
 
-The CloudFormation templates and Helm values live in
+Two examples with `config/clickhouse/`, both running `hud-migrate` before the collector (see
+[Endpoint and hud-migrate](#endpoint-and-hud-migrate)) with its own DDL user, and the collector with the INSERT-only
+one. Bump the image tag to the release you deploy. The OpenSearch stack's templates and values live in
 [hud-opensearch-resources](https://github.com/code-hud/hud-opensearch-resources/blob/main/deploy/README.md).
+
+### Kubernetes (Helm)
+
+`deploy/helm-values.yaml` runs the image with the upstream
+[`open-telemetry/opentelemetry-collector`](https://github.com/open-telemetry/opentelemetry-helm-charts) chart. The
+chart's generated config is off (`configMap.create: false`): the collector reads the repo's files from a ConfigMap
+through `--config` flags, and `hud-migrate` runs as an init container. Credentials come from two Secrets:
+
+```sh
+kubectl create configmap hud-otel-collector-config --from-file=config/clickhouse/
+kubectl create secret generic hud-clickhouse-collector --from-literal=CLICKHOUSE_ENDPOINT="$CLICKHOUSE_ENDPOINT" \
+  --from-literal=CLICKHOUSE_USER=hud_collector --from-literal=CLICKHOUSE_PASSWORD="$COLLECTOR_PASSWORD"
+kubectl create secret generic hud-clickhouse-migrator --from-literal=CLICKHOUSE_ENDPOINT="$CLICKHOUSE_ENDPOINT" \
+  --from-literal=CLICKHOUSE_USER=hud_migrator --from-literal=CLICKHOUSE_PASSWORD="$MIGRATOR_PASSWORD"
+helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
+helm install hud-otel open-telemetry/opentelemetry-collector -f deploy/helm-values.yaml
+```
+
+The SDK sends to `http://hud-otel-opentelemetry-collector:4318` (or `:4317` for gRPC) in that namespace. The chart's
+config checksum doesn't cover this ConfigMap, so `kubectl rollout restart` the deployment after changing it. For
+PromQL, add `--config=/conf/hud/timeseries.yaml` and `HUD_TIMESERIES_TABLE=true` and keep one replica.
+`config/amp/amp.yaml` is not wired here: it is only validated, with an example workspace and receivers on the default
+`localhost` endpoints.
+
+### AWS (CloudFormation, ECS Fargate)
+
+`deploy/ecs-fargate.yaml` creates an ECS cluster and service, a task whose `hud-migrate` container must exit
+successfully before the collector starts, a log group, and a Cloud Map name, `collector.<NamespaceName>`, for the SDK's
+services in the VPC (the outputs give the OTLP endpoints). You provide the VPC, subnets and a security group that
+allows 4317 and 4318 in. The distribution only has the `env` and `file` config providers, so the config files are SSM
+parameters the task reads into env vars (`--config=env:...`), and each user is a Secrets Manager secret with
+`username` and `password`:
+
+```sh
+for f in clickhouse collector-telemetry timeseries; do
+  aws ssm put-parameter --overwrite --type String --name "/hud/otel-collector/$f.yaml" --value "file://config/clickhouse/$f.yaml"
+done
+aws cloudformation deploy --stack-name hud-otel-collector --template-file deploy/ecs-fargate.yaml \
+  --capabilities CAPABILITY_IAM --parameter-overrides VpcId=vpc-... SubnetIds=subnet-...,subnet-... \
+  SecurityGroupId=sg-... ClickHouseEndpoint="$CLICKHOUSE_ENDPOINT" \
+  CollectorSecretArn=arn:aws:secretsmanager:... MigratorSecretArn=arn:aws:secretsmanager:...
+```
+
+Tasks read the parameters when they start: `aws ecs update-service --force-new-deployment` after changing them.
+`TimeseriesTable=true` layers `timeseries.yaml` (keep `DesiredCount` at 1). It has no load balancer. For SDKs outside
+the VPC, add a network load balancer on 4317/4318 with health checks on 13133 (the image has no shell, so the task
+has no container health check).
 
 ## Local development
 

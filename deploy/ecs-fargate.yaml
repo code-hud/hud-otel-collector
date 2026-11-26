@@ -1,0 +1,206 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  hud-otel-collector on ECS Fargate with config/clickhouse/. hud-migrate runs first in the same task, then the
+  collector serves OTLP on 4317 (gRPC) and 4318 (HTTP) at collector.<namespace> inside the VPC. See the README's AWS
+  section.
+
+Parameters:
+  Image:
+    Type: String
+    Default: ghcr.io/code-hud/hud-otel-collector:0.165.0-hud.5
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Private subnets with a NAT gateway (or public ones with AssignPublicIp=ENABLED) to pull from ghcr.io.
+  SecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Must allow inbound TCP 4317 and 4318 from the SDK's services, and outbound to ClickHouse.
+  AssignPublicIp:
+    Type: String
+    Default: DISABLED
+    AllowedValues: [ENABLED, DISABLED]
+  NamespaceName:
+    Type: String
+    Default: hud.internal
+    Description: Private DNS namespace (a new Route 53 private hosted zone) for the collector's address.
+  ClickHouseEndpoint:
+    Type: String
+    Description: scheme://host:port of the HTTP interface, e.g. https://<service>.<region>.aws.clickhouse.cloud:8443
+  CollectorSecretArn:
+    Type: String
+    Description: Full ARN of the Secrets Manager secret {"username", "password"} of the INSERT-only collector user.
+  MigratorSecretArn:
+    Type: String
+    Description: Full ARN of the Secrets Manager secret {"username", "password"} of hud-migrate's DDL user.
+  ConfigParameterPrefix:
+    Type: String
+    Default: /hud/otel-collector
+    Description: SSM parameters <prefix>/clickhouse.yaml, collector-telemetry.yaml (and timeseries.yaml) hold the repo's config files.
+  Database:
+    Type: String
+    Default: hud_otel
+  TimeseriesTable:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: Also layer timeseries.yaml (PromQL). Its pipeline keeps state per pod, so keep DesiredCount at 1.
+  CollectorTelemetry:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+  Environment:
+    Type: String
+    Default: production
+    Description: deployment.environment.name of the collector's own metrics.
+  DesiredCount:
+    Type: Number
+    Default: 1
+  Cpu:
+    Type: Number
+    Default: 512
+  Memory:
+    Type: Number
+    Default: 1024
+
+Conditions:
+  Timeseries: !Equals [!Ref TimeseriesTable, "true"]
+
+Resources:
+  Cluster:
+    Type: AWS::ECS::Cluster
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /ecs/${AWS::StackName}
+      RetentionInDays: 30
+
+  # Pulls the image, writes logs and resolves the secrets and config parameters. The task itself needs no AWS access.
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ecs-tasks.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: secrets
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: [!Ref CollectorSecretArn, !Ref MigratorSecretArn]
+              - Effect: Allow
+                Action: ssm:GetParameters
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${ConfigParameterPrefix}/*
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Ref AWS::StackName
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: !Ref Cpu
+      Memory: !Ref Memory
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      ContainerDefinitions:
+        - Name: hud-migrate
+          Image: !Ref Image
+          Essential: false
+          EntryPoint: [/hud-migrate]
+          Command: [up]
+          Environment:
+            - {Name: CLICKHOUSE_ENDPOINT, Value: !Ref ClickHouseEndpoint}
+            - {Name: HUD_CLICKHOUSE_DATABASE, Value: !Ref Database}
+            - {Name: HUD_TIMESERIES_TABLE, Value: !Ref TimeseriesTable}
+            - {Name: HUD_COLLECTOR_TELEMETRY, Value: !Ref CollectorTelemetry}
+          Secrets:
+            - {Name: CLICKHOUSE_USER, ValueFrom: !Sub "${MigratorSecretArn}:username::"}
+            - {Name: CLICKHOUSE_PASSWORD, ValueFrom: !Sub "${MigratorSecretArn}:password::"}
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: hud-migrate
+        # The image is FROM scratch, so there is no shell for a container health check; health_check listens on 13133
+        # for a load balancer target group.
+        - Name: collector
+          Image: !Ref Image
+          Essential: true
+          DependsOn:
+            - {ContainerName: hud-migrate, Condition: SUCCESS}
+          # The distribution has the env and file config providers only, so each file arrives as an env var.
+          Command: !If
+            - Timeseries
+            - [--config=env:HUD_CONFIG_CLICKHOUSE, --config=env:HUD_CONFIG_TELEMETRY, --config=env:HUD_CONFIG_TIMESERIES]
+            - [--config=env:HUD_CONFIG_CLICKHOUSE, --config=env:HUD_CONFIG_TELEMETRY]
+          PortMappings:
+            - {Name: otlp-grpc, ContainerPort: 4317, Protocol: tcp}
+            - {Name: otlp-http, ContainerPort: 4318, Protocol: tcp}
+          Environment:
+            - {Name: CLICKHOUSE_ENDPOINT, Value: !Ref ClickHouseEndpoint}
+            - {Name: HUD_CLICKHOUSE_DATABASE, Value: !Ref Database}
+            - {Name: HUD_COLLECTOR_TELEMETRY, Value: !Ref CollectorTelemetry}
+            - {Name: HUD_COLLECTOR_ENVIRONMENT, Value: !Ref Environment}
+          Secrets:
+            - {Name: CLICKHOUSE_USER, ValueFrom: !Sub "${CollectorSecretArn}:username::"}
+            - {Name: CLICKHOUSE_PASSWORD, ValueFrom: !Sub "${CollectorSecretArn}:password::"}
+            - {Name: HUD_CONFIG_CLICKHOUSE, ValueFrom: !Sub "${ConfigParameterPrefix}/clickhouse.yaml"}
+            - {Name: HUD_CONFIG_TELEMETRY, ValueFrom: !Sub "${ConfigParameterPrefix}/collector-telemetry.yaml"}
+            - !If
+              - Timeseries
+              - {Name: HUD_CONFIG_TIMESERIES, ValueFrom: !Sub "${ConfigParameterPrefix}/timeseries.yaml"}
+              - !Ref AWS::NoValue
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: collector
+
+  Namespace:
+    Type: AWS::ServiceDiscovery::PrivateDnsNamespace
+    Properties:
+      Name: !Ref NamespaceName
+      Vpc: !Ref VpcId
+
+  Discovery:
+    Type: AWS::ServiceDiscovery::Service
+    Properties:
+      Name: collector
+      NamespaceId: !Ref Namespace
+      DnsConfig:
+        DnsRecords:
+          - {Type: A, TTL: 10}
+      HealthCheckCustomConfig:
+        FailureThreshold: 1
+
+  Service:
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster: !Ref Cluster
+      LaunchType: FARGATE
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: !Ref DesiredCount
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets: !Ref SubnetIds
+          SecurityGroups: [!Ref SecurityGroupId]
+          AssignPublicIp: !Ref AssignPublicIp
+      ServiceRegistries:
+        - RegistryArn: !GetAtt Discovery.Arn
+
+Outputs:
+  OtlpGrpcEndpoint:
+    Value: !Sub http://collector.${NamespaceName}:4317
+  OtlpHttpEndpoint:
+    Value: !Sub http://collector.${NamespaceName}:4318
+  LogGroup:
+    Value: !Ref LogGroup
