@@ -67,6 +67,31 @@ func TestSchemaIsCreateOnly(t *testing.T) {
 	}
 }
 
+func TestEndpointFeatureFlagRollupsBeforeSources(t *testing.T) {
+	sql, err := schemaFS.ReadFile("schema/0005_endpoint_feature_flags.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	viewOffset := func(name string) int {
+		t.Helper()
+		offset := strings.Index(string(sql), "CREATE MATERIALIZED VIEW IF NOT EXISTS ${DATABASE}."+name+" TO ")
+		if offset < 0 {
+			t.Fatalf("missing materialized view %s", name)
+		}
+		return offset
+	}
+
+	firstSource := min(viewOffset("endpoint_durations_v2_mv"), viewOffset("endpoint_counters_v2_mv"))
+	for _, rollup := range []string{
+		"endpoint_metrics_1h_v2_from_durations_mv", "endpoint_metrics_lean_1h_v2_from_durations_mv",
+		"endpoint_metrics_1h_v2_from_counters_mv", "endpoint_metrics_lean_1h_v2_from_counters_mv",
+	} {
+		if viewOffset(rollup) > firstSource {
+			t.Errorf("rollup %s must be created before both raw metric sources", rollup)
+		}
+	}
+}
+
 // Runs against ClickHouse as hud_migrator (test/smoke.sh sets the env up).
 func TestUp(t *testing.T) {
 	if os.Getenv("CLICKHOUSE_ENDPOINT") == "" {
