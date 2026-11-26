@@ -1,0 +1,77 @@
+# Example starting point to adapt, not a maintained or supported deployment artifact.
+# Values for the upstream chart (https://github.com/open-telemetry/opentelemetry-helm-charts, chart
+# open-telemetry/opentelemetry-collector) running this image with config/clickhouse/. See the README's Kubernetes section.
+# The chart's own config (relay.yaml, merged with its defaults and presets) is off: its default receivers aren't in
+# this distribution. The collector reads the repo's files from the hud-otel-collector-config ConfigMap instead.
+mode: deployment
+
+image:
+  repository: ghcr.io/code-hud/hud-otel-collector
+  tag: 0.165.0-hud.5
+
+command:
+  name: hud-otelcol
+  # Add --config=/conf/hud/timeseries.yaml with HUD_TIMESERIES_TABLE=true below, and keep replicaCount at 1: that
+  # pipeline keeps delta_to_cumulative state per pod.
+  extraArgs:
+    - --config=/conf/hud/clickhouse.yaml
+    - --config=/conf/hud/collector-telemetry.yaml
+
+configMap:
+  create: false
+
+extraVolumes:
+  - name: hud-config
+    configMap:
+      name: hud-otel-collector-config
+extraVolumeMounts:
+  - name: hud-config
+    mountPath: /conf/hud
+    readOnly: true
+
+# CLICKHOUSE_ENDPOINT, CLICKHOUSE_USER and CLICKHOUSE_PASSWORD: INSERT-only credentials.
+extraEnvsFrom:
+  - secretRef:
+      name: hud-clickhouse-collector
+
+# hud-migrate and the collector must agree on these; each ignores the ones it doesn't read.
+extraEnvs: &hud-env
+  - name: HUD_CLICKHOUSE_DATABASE
+    value: hud_otel
+  - name: HUD_TIMESERIES_TABLE
+    value: "false"
+  - name: HUD_COLLECTOR_TELEMETRY
+    value: "true"
+  - name: HUD_COLLECTOR_ENVIRONMENT
+    value: production
+
+# Creates the database and schema before the collector starts, with DDL credentials the collector never gets.
+initContainers:
+  - name: hud-migrate
+    image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+    command: [/hud-migrate]
+    args: [up]
+    envFrom:
+      - secretRef:
+          name: hud-clickhouse-migrator
+    env: *hud-env
+
+ports:
+  jaeger-compact:
+    enabled: false
+  jaeger-thrift:
+    enabled: false
+  jaeger-grpc:
+    enabled: false
+  zipkin:
+    enabled: false
+  metrics:
+    enabled: false
+
+# memory_limiter (limit_percentage: 80) and the chart's GOMEMLIMIT both read the memory limit.
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    memory: 1Gi
