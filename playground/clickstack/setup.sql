@@ -8,9 +8,11 @@
 
 CREATE ROLE IF NOT EXISTS hud_write;   GRANT INSERT ON ${HUD_CLICKHOUSE_DATABASE}.* TO hud_write;
 GRANT INSERT ON ${HUD_CLICKHOUSE_DATABASE}_collector.* TO hud_write;
--- Only what the create-only schema rule allows: the server refuses DROP, RENAME, MODIFY, CREATE OR REPLACE, ADD INDEX.
+-- Tables are create-only: the server refuses DROP, RENAME, MODIFY, CREATE OR REPLACE and ADD INDEX on them. Views are
+-- the exception: ALTER VIEW (a materialized view's MODIFY QUERY) and DROP VIEW, so a view can be changed in place.
 CREATE ROLE IF NOT EXISTS hud_ddl;
-GRANT CREATE DATABASE, CREATE TABLE, CREATE VIEW, ALTER ADD COLUMN, SELECT, INSERT ON ${HUD_CLICKHOUSE_DATABASE}.* TO hud_ddl;
+GRANT CREATE DATABASE, CREATE TABLE, CREATE VIEW, ALTER ADD COLUMN, ALTER VIEW, DROP VIEW, SELECT, INSERT
+  ON ${HUD_CLICKHOUSE_DATABASE}.* TO hud_ddl;
 GRANT CREATE DATABASE, CREATE TABLE ON ${HUD_CLICKHOUSE_DATABASE}_collector.* TO hud_ddl;
 
 CREATE USER IF NOT EXISTS hud_collector IDENTIFIED WITH sha256_password BY 'Collector-pass-1234' DEFAULT ROLE hud_write;
