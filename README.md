@@ -213,8 +213,10 @@ Rules for `hud-migrate/schema/*.sql`, as in ClickStack:
 - **Create only.** Statements are `CREATE ... IF NOT EXISTS` (database, tables, views) or `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`; never
   `CREATE OR REPLACE`, `MODIFY`, `RENAME` or `DROP`. Changing an existing object means a new object under a new name.
   `TestSchemaIsCreateOnly` (run by `make smoke`) fails on anything else, and the migrator's grants (`CREATE
-  DATABASE, CREATE TABLE, CREATE VIEW, ALTER ADD COLUMN, SELECT, INSERT ON <database>.*`) make the server refuse it too. Add a new numbered file
-  rather than editing a released one.
+  DATABASE, CREATE TABLE, CREATE VIEW, ALTER ADD COLUMN, ALTER VIEW, DROP VIEW, SELECT, INSERT ON <database>.*`) make
+  the server refuse it on tables too. Views are the exception on the server: the migrator may change a materialized
+  view's query (`ALTER TABLE <view> MODIFY QUERY`) or drop a view, for a change made by hand; the schema files stay
+  create-only. Add a new numbered file rather than editing a released one.
 - A new column needs a `DEFAULT` or `MATERIALIZED` expression, so older collectors' inserts, which don't name it,
   keep working.
 - Name objects as `${DATABASE}.<name>` (or in its `${DATABASE}_promql` and `${DATABASE}_collector` siblings), and

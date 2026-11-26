@@ -138,7 +138,7 @@ MIGRATOR=(-e CLICKHOUSE_ENDPOINT=tcp://smoke-clickhouse:9000 -e CLICKHOUSE_USER=
   -e HUD_CLICKHOUSE_DATABASE=$DB)
 migrate() { docker run --rm --network $NET "${MIGRATOR[@]}" --entrypoint /hud-migrate "$IMAGE" "$@"; }
 
-echo "--- hud-migrate: HUD_SCHEMA_MANAGED=false doesn't connect, 4 concurrent up create $DB and no ${DB}_promql (nor its grants), grants refuse DROP, ADD INDEX and other databases, go test (incl. the create-only check)"
+echo "--- hud-migrate: HUD_SCHEMA_MANAGED=false doesn't connect, 4 concurrent up create $DB and no ${DB}_promql (nor its grants), grants refuse DROP TABLE, ADD INDEX and other databases but allow a view's MODIFY QUERY and DROP VIEW, go test (incl. the create-only check)"
 docker run --rm -e HUD_SCHEMA_MANAGED=false --entrypoint /hud-migrate "$IMAGE" up
 pids=(); for _ in 1 2 3 4; do migrate up & pids+=($!); done
 for p in "${pids[@]}"; do wait "$p"; done
@@ -164,6 +164,11 @@ got=$(curl -s -u default:admin-pass localhost:18123 --data-binary "SELECT (SELEC
 for q in "DROP TABLE $DB.otel_logs" "ALTER TABLE $DB.otel_logs ADD INDEX smoke_idx Body TYPE bloom_filter" \
   "DROP DATABASE $DB" "CREATE DATABASE hud_otel" "CREATE DATABASE ${DB}_promql"; do
   curl -s -u hud_migrator:Migrator-pass-1234 localhost:18123 --data-binary "$q" | grep -q ACCESS_DENIED || { echo "FAIL: hud_migrator may run: $q"; exit 1; }
+done
+for q in "CREATE MATERIALIZED VIEW $DB.smoke_mv ENGINE = Null AS SELECT Body FROM $DB.otel_logs WHERE 0" \
+  "ALTER TABLE $DB.smoke_mv MODIFY QUERY SELECT Body FROM $DB.otel_logs WHERE 1 = 0" "DROP VIEW $DB.smoke_mv"; do
+  out=$(curl -s -u hud_migrator:Migrator-pass-1234 localhost:18123 --data-binary "$q")
+  [ -z "$out" ] || { echo "FAIL: hud_migrator may not run: $q: $out"; exit 1; }
 done
 docker run --rm --network $NET "${MIGRATOR[@]}" -v "$DIR/../hud-migrate:/src" -w /src \
   -v hud-otelcol-gomod:/go/pkg/mod -v hud-otelcol-gocache:/root/.cache/go-build "$GO_IMAGE" go test -count=1 ./...
