@@ -1,3 +1,4 @@
+# Example starting point to adapt, not a maintained or supported deployment artifact.
 # Values for the upstream chart (https://github.com/open-telemetry/opentelemetry-helm-charts, chart
 # open-telemetry/opentelemetry-collector) running this image with config/clickhouse/. See the README's Kubernetes section.
 # The chart's own config (relay.yaml, merged with its defaults and presets) is off: its default receivers aren't in

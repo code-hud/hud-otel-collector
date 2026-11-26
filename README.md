@@ -55,6 +55,9 @@ sha256sum --ignore-missing -c checksums.txt
 
 ## Deploying
 
+These are a proposal for how to deploy, not a supported or official method: example starting points to adapt to your
+environment, not maintained deployment artifacts.
+
 Two examples with `config/clickhouse/`, both running `hud-migrate` before the collector (see
 [Endpoint and hud-migrate](#endpoint-and-hud-migrate)) with its own DDL user, and the collector with the INSERT-only
 one. Bump the image tag to the release you deploy. The OpenSearch stack's templates and values live in
